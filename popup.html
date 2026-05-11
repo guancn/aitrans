@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>划词翻译设置</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <h2>极简划词翻译</h2>
+    
+    <div class="setting-item">
+      <label for="targetLang">翻译为：</label>
+      <select id="targetLang">
+        <option value="zh-CN">简体中文 (Chinese)</option>
+        <option value="en">英语 (English)</option>
+        <option value="ja">日语 (Japanese)</option>
+        <option value="ko">韩语 (Korean)</option>
+        <option value="fr">法语 (French)</option>
+        <option value="de">德语 (German)</option>
+        <option value="es">西班牙语 (Spanish)</option>
+        <option value="ru">俄语 (Russian)</option>
+      </select>
+    </div>
+
+    <div class="setting-item">
+      <label for="triggerMode">划词后行为：</label>
+      <select id="triggerMode">
+        <option value="icon">显示图标 (悬停翻译)</option>
+        <option value="direct">直接显示翻译窗</option>
+      </select>
+    </div>
+
+    <div class="setting-item">
+      <label for="translationService">翻译服务：</label>
+      <select id="translationService">
+        <option value="deepseek">DeepSeek V4 Flash (AI 翻译)</option>
+        <option value="google">Google 翻译 (免费)</option>
+      </select>
+    </div>
+
+    <div class="setting-item" id="apiKeySection">
+      <label for="apiKey">DeepSeek API Key：</label>
+      <div class="api-key-row">
+        <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
+        <button id="toggleApiKey" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="setting-item" id="promptSection">
+      <label for="systemPrompt">翻译提示词：</label>
+      <textarea id="systemPrompt" rows="4" placeholder="自定义翻译提示词，使用 {{targetLang}} 表示目标语言"></textarea>
+      <button id="resetPrompt" type="button">恢复默认</button>
+    </div>
+
+    <div class="footer">
+      <span id="saveStatus">设置自动保存</span>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

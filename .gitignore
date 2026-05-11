@@ -1,0 +1,10 @@
+.DS_Store
+Thumbs.db
+*.zip
+*.swp
+*.swo
+*~
+*.bak
+AGENTS.md
+CLAUDE.md
+GEMINI.md
