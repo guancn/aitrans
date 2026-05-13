@@ -8,7 +8,13 @@
 <body>
   <div class="container">
     <h2>极简划词翻译</h2>
-    
+
+    <div class="segmented-control">
+      <button id="segSelection" class="seg-btn active">划词翻译</button>
+      <button id="segFullpage" class="seg-btn">全页翻译</button>
+    </div>
+
+    <div id="selectionModeSettings">
     <div class="setting-item">
       <label for="targetLang">翻译为：</label>
       <select id="targetLang">
@@ -53,6 +59,46 @@
       <label for="systemPrompt">翻译提示词：</label>
       <textarea id="systemPrompt" rows="4" placeholder="自定义翻译提示词，使用 {{targetLang}} 表示目标语言"></textarea>
       <button id="resetPrompt" type="button">恢复默认</button>
+    </div>
+    </div>
+
+    <div id="fullpageModeSettings" style="display:none">
+      <div class="setting-item">
+        <label for="fpTargetLang">翻译为：</label>
+        <select id="fpTargetLang">
+          <option value="zh-CN">简体中文 (Chinese)</option>
+          <option value="en">英语 (English)</option>
+          <option value="ja">日语 (Japanese)</option>
+          <option value="ko">韩语 (Korean)</option>
+          <option value="fr">法语 (French)</option>
+          <option value="de">德语 (German)</option>
+          <option value="es">西班牙语 (Spanish)</option>
+          <option value="ru">俄语 (Russian)</option>
+        </select>
+      </div>
+      <div class="setting-item">
+        <label for="fpTranslationService">翻译服务：</label>
+        <select id="fpTranslationService">
+          <option value="deepseek">DeepSeek V4 Flash (AI 翻译)</option>
+          <option value="google">Google 翻译 (免费)</option>
+        </select>
+      </div>
+      <div class="setting-item" id="fpApiKeySection">
+        <label for="fpApiKey">DeepSeek API Key：</label>
+        <div class="api-key-row">
+          <input type="password" id="fpApiKey" placeholder="sk-..." autocomplete="off">
+          <button id="fpToggleApiKey" type="button">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="setting-item" id="fpPromptSection">
+        <label for="fpSystemPrompt">翻译提示词：</label>
+        <textarea id="fpSystemPrompt" rows="4" placeholder="自定义翻译提示词，使用 {{targetLang}} 表示目标语言"></textarea>
+        <button id="fpResetPrompt" type="button">恢复默认</button>
+      </div>
+      <button id="translatePageBtn" type="button" class="primary-btn">翻译当前网页</button>
+      <span id="pageTranslateStatus" style="display:none; margin-top:6px; font-size:12px;"></span>
     </div>
 
     <div class="footer">

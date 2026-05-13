@@ -164,3 +164,48 @@
     border-top-color: #8ab4f8;
   }
 }
+
+/* 全页翻译进度条 */
+#chrome-ext-translate-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 3px;
+  z-index: 2147483647;
+  pointer-events: none;
+}
+
+.translate-ext-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #1a73e8, #4285f4);
+  transition: width 0.3s ease;
+}
+
+.translate-ext-progress-text {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  z-index: 2147483647;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  #chrome-ext-translate-progress {
+    background: rgba(255, 255, 255, 0.05);
+  }
+  
+  .translate-ext-progress-text {
+    background: rgba(60, 64, 67, 0.9);
+    color: #e8eaed;
+  }
+}

@@ -1,19 +1,24 @@
 let popupContainer = null;
 let iconContainer = null;
 let isContextInvalidated = false;
+let activeRequestId = 0;
 
 // 缓存用户配置，避免高频划词时产生多余的异步 IPC 开销
-let userConfig = { triggerMode: 'icon' };
+let userConfig = { triggerMode: 'icon', activeMode: 'selection' };
 try {
   if (chrome.runtime && chrome.runtime.id) {
-    chrome.storage.sync.get(['triggerMode'], (items) => {
-      if (!chrome.runtime.lastError && items && items.triggerMode) {
-        userConfig.triggerMode = items.triggerMode;
+    chrome.storage.sync.get(['triggerMode', 'activeMode'], (items) => {
+      if (!chrome.runtime.lastError && items) {
+        if (items.triggerMode) userConfig.triggerMode = items.triggerMode;
+        if (items.activeMode) userConfig.activeMode = items.activeMode;
       }
     });
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === 'sync' && changes.triggerMode) {
         userConfig.triggerMode = changes.triggerMode.newValue;
+      }
+      if (area === 'sync' && changes.activeMode) {
+        userConfig.activeMode = changes.activeMode.newValue;
       }
     });
   }
@@ -67,6 +72,9 @@ function onMouseUp(e) {
   if (!isExtensionAlive()) return;
   if (popupContainer && popupContainer.contains(e.target)) return;
   if (iconContainer && iconContainer.contains(e.target)) return;
+
+  // 全页翻译模式下禁用划词翻译
+  if (userConfig.activeMode === 'fullpage') return;
 
   const selection = window.getSelection();
   const text = selection.toString().trim();
@@ -180,6 +188,8 @@ function createAndShowPopup(text, x, y, replaceIcon = null, sourceStyleInfo = nu
     return;
   }
 
+  const requestId = ++activeRequestId;
+
   const container = document.createElement('div');
   container.id = 'chrome-ext-translate-popup';
   
@@ -226,6 +236,8 @@ function createAndShowPopup(text, x, y, replaceIcon = null, sourceStyleInfo = nu
     chrome.runtime.sendMessage({ action: 'translate', text: text }, (response) => {
       clearTimeout(timeoutId);
 
+      if (requestId !== activeRequestId) return;
+
       if (chrome.runtime.lastError) {
         if (chrome.runtime.lastError.message && chrome.runtime.lastError.message.includes('Extension context invalidated')) {
            markInvalidated();
@@ -243,7 +255,7 @@ function createAndShowPopup(text, x, y, replaceIcon = null, sourceStyleInfo = nu
       if (response && response.success) {
         popupContainer.innerHTML = `
           <div class="translate-ext-header">
-             <span class="translate-ext-lang">${response.sourceLang.toUpperCase()}</span>
+             <span class="translate-ext-lang">${escapeHtml(response.sourceLang).toUpperCase()}</span>
              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
              <span class="translate-ext-logo">智能翻译</span>
              <div class="translate-ext-close">
@@ -289,3 +301,202 @@ function escapeHtml(unsafe) {
          .replace(/"/g, "&quot;")
          .replace(/'/g, "&#039;");
 }
+
+// ─── 全页翻译 ────────────────────────────────────────────
+
+// 跳过标签：这些元素内的文本不翻译
+const SKIP_TAGS = new Set([
+  'SCRIPT', 'STYLE', 'NOSCRIPT', 'IFRAME', 'CANVAS',
+  'SVG', 'CODE', 'PRE', 'TEXTAREA', 'INPUT', 'BUTTON', 'SELECT',
+  'OPTION', 'OPTGROUP'
+]);
+
+// 用 TreeWalker 收集页面所有可翻译文本节点
+function* walkTextNodes(root = document.body) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node || !node.parentElement) return NodeFilter.FILTER_REJECT;
+      const tag = node.parentElement.tagName;
+      if (SKIP_TAGS.has(tag)) return NodeFilter.FILTER_REJECT;
+
+      // 跳过插件自己的 UI 元素
+      let el = node.parentElement;
+      while (el) {
+        const id = el.id || '';
+        if (id.startsWith('chrome-ext-translate-')) return NodeFilter.FILTER_REJECT;
+        el = el.parentElement;
+      }
+
+      // 跳过空白或太短的文本
+      const txt = (node.nodeValue || '').trim();
+      if (txt.length < 1) return NodeFilter.FILTER_REJECT;
+
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+
+  let cur;
+  while ((cur = walker.nextNode())) {
+    yield cur;
+  }
+}
+
+// 存储原文，用于恢复
+const originalTexts = new WeakMap();
+let pageTranslationInProgress = false;
+
+// 全页翻译主流程
+async function startPageTranslation() {
+  if (pageTranslationInProgress) return;
+  if (!isExtensionAlive()) return;
+  pageTranslationInProgress = true;
+
+  try {
+    // 先恢复之前的翻译（如果存在）
+    restorePageTexts();
+
+    const nodes = Array.from(walkTextNodes());
+    if (nodes.length === 0) return;
+
+    // 保存原文
+    for (const node of nodes) {
+      if (!originalTexts.has(node)) {
+        originalTexts.set(node, node.nodeValue);
+      }
+    }
+
+    showProgress('正在收集文本...', 0);
+
+    // 提取纯文本数组
+    const texts = nodes.map(n => (n.nodeValue || '').trim());
+
+    // 分批发送（每批最多 20 条）
+    const BATCH_SIZE = 20;
+    const batches = [];
+    for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+      batches.push({
+        index: i,
+        texts: texts.slice(i, i + BATCH_SIZE),
+        nodes: nodes.slice(i, i + BATCH_SIZE)
+      });
+    }
+
+    const total = batches.length;
+    let completed = 0;
+    const MAX_CONCURRENT = 3;
+
+    showProgress('正在翻译...', 0);
+
+    // 并发批量调度：每次最多 MAX_CONCURRENT 批并行
+    for (let i = 0; i < batches.length; i += MAX_CONCURRENT) {
+      const chunk = batches.slice(i, i + MAX_CONCURRENT);
+      const results = await Promise.all(chunk.map(batch =>
+        new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            { action: 'translateBatch', texts: batch.texts },
+            (response) => {
+              resolve(chrome.runtime.lastError ? null : response);
+            }
+          );
+        })
+      ));
+
+      // 处理结果
+      for (let j = 0; j < chunk.length; j++) {
+        const batch = chunk[j];
+        const result = results[j];
+        if (result && Array.isArray(result)) {
+          for (let k = 0; k < result.length; k++) {
+            const node = batch.nodes[k];
+            const r = result[k];
+            if (r && r.success && r.translatedText && node) {
+              node.nodeValue = r.translatedText;
+            }
+          }
+        }
+        completed++;
+      }
+
+      const pct = Math.round((completed / total) * 100);
+      showProgress(`正在翻译... ${completed}/${total} 段 (${pct}%)`, pct);
+    }
+
+    showProgress('翻译完成', 100);
+    setTimeout(hideProgress, 2000);
+  } catch (e) {
+    console.debug('划词翻译: 全页翻译异常', e);
+    showProgress('翻译出错，请刷新页面后重试', 0);
+    setTimeout(hideProgress, 3000);
+  } finally {
+    pageTranslationInProgress = false;
+  }
+}
+
+// 恢复页面原文
+function restorePageTexts() {
+  const nodes = Array.from(walkTextNodes());
+  for (const node of nodes) {
+    const orig = originalTexts.get(node);
+    if (orig !== undefined && node.nodeValue !== orig) {
+      node.nodeValue = orig;
+    }
+  }
+  // 不清理 originalTexts，保留以便再次恢复
+}
+
+// ─── 进度条 ──────────────────────────────────────────────
+
+let progressBar = null;
+let progressFill = null;
+let progressText = null;
+
+function showProgress(msg, pct) {
+  if (!progressBar) {
+    progressBar = document.createElement('div');
+    progressBar.id = 'chrome-ext-translate-progress';
+    progressBar.style.top = `${window.scrollY}px`;
+    progressBar.innerHTML = '<div class="translate-ext-progress-fill"></div>';
+    document.body.appendChild(progressBar);
+
+    progressFill = progressBar.querySelector('.translate-ext-progress-fill');
+
+    progressText = document.createElement('div');
+    progressText.className = 'translate-ext-progress-text';
+    progressText.style.top = `${window.scrollY + 8}px`;
+    document.body.appendChild(progressText);
+  }
+
+  // 滚动时更新位置
+  progressBar.style.top = `${window.scrollY}px`;
+  progressText.style.top = `${window.scrollY + 8}px`;
+
+  if (progressFill) progressFill.style.width = `${pct}%`;
+  if (progressText) progressText.textContent = msg;
+}
+
+function hideProgress() {
+  if (progressBar) { progressBar.remove(); progressBar = null; progressFill = null; }
+  if (progressText) { progressText.remove(); progressText = null; }
+}
+
+// 滚动时更新进度条位置
+function handleProgressScroll() {
+  if (progressBar) {
+    progressBar.style.top = `${window.scrollY}px`;
+    if (progressText) progressText.style.top = `${window.scrollY + 8}px`;
+  }
+}
+document.addEventListener('scroll', handleProgressScroll, { passive: true });
+
+// ─── 消息监听 ────────────────────────────────────────────
+
+chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+  if (request.action === 'translatePage') {
+    if (isExtensionAlive()) {
+      startPageTranslation();
+      sendResponse({ received: true });
+    } else {
+      sendResponse({ received: false, error: '插件上下文已失效' });
+    }
+  }
+});

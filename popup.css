@@ -21,6 +21,49 @@ h2 {
   padding-bottom: 10px;
 }
 
+/* Segmented Control */
+.segmented-control {
+  display: flex;
+  background: #f1f3f4;
+  border-radius: 8px;
+  padding: 3px;
+  margin-bottom: 16px;
+}
+
+.seg-btn {
+  flex: 1;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  color: #5f6368;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+  outline: none;
+}
+
+.seg-btn.active {
+  background: #1a73e8;
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+@media (prefers-color-scheme: dark) {
+  .segmented-control {
+    background: #303134;
+  }
+  .seg-btn {
+    color: #9aa0a6;
+  }
+  .seg-btn.active {
+    background: #8ab4f8;
+    color: #202124;
+  }
+}
+
 .setting-item {
   margin-bottom: 15px;
   display: flex;
@@ -119,6 +162,24 @@ select:focus {
   border-color: #1a73e8;
 }
 
+#fpSystemPrompt {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #dadce0;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  resize: vertical;
+  line-height: 1.4;
+  transition: border-color 0.2s ease;
+  box-sizing: border-box;
+}
+
+#fpSystemPrompt:focus {
+  border-color: #1a73e8;
+}
+
 #resetPrompt {
   margin-top: 6px;
   padding: 4px 10px;
@@ -132,6 +193,23 @@ select:focus {
 }
 
 #resetPrompt:hover {
+  border-color: #1a73e8;
+  color: #1a73e8;
+}
+
+#fpResetPrompt {
+  margin-top: 6px;
+  padding: 4px 10px;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  background: #fff;
+  color: #5f6368;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+#fpResetPrompt:hover {
   border-color: #1a73e8;
   color: #1a73e8;
 }
@@ -198,6 +276,16 @@ select:focus {
     border-color: #8ab4f8;
   }
 
+  #fpSystemPrompt {
+    background-color: #303134;
+    border-color: #5f6368;
+    color: #e8eaed;
+  }
+
+  #fpSystemPrompt:focus {
+    border-color: #8ab4f8;
+  }
+
   #resetPrompt {
     background-color: #303134;
     border-color: #5f6368;
@@ -209,11 +297,67 @@ select:focus {
     color: #8ab4f8;
   }
 
+  #fpResetPrompt {
+    background-color: #303134;
+    border-color: #5f6368;
+    color: #9aa0a6;
+  }
+
+  #fpResetPrompt:hover {
+    border-color: #8ab4f8;
+    color: #8ab4f8;
+  }
+
   .footer {
     color: #9aa0a6;
   }
 
   #saveStatus.show {
     color: #81c995;
+  }
+}
+
+/* 翻译按钮 */
+.primary-btn {
+  width: 100%;
+  padding: 8px 0;
+  border: none;
+  border-radius: 6px;
+  background: #1a73e8;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.primary-btn:hover {
+  background: #1557b0;
+}
+
+.primary-btn:active {
+  background: #0d47a1;
+}
+
+@media (prefers-color-scheme: dark) {
+  .primary-btn {
+    background: #8ab4f8;
+    color: #202124;
+  }
+  
+  .primary-btn:hover {
+    background: #aecbfa;
+  }
+}
+
+/* 状态文字 */
+#pageTranslateStatus {
+  color: #5f6368;
+  text-align: center;
+}
+
+@media (prefers-color-scheme: dark) {
+  #pageTranslateStatus {
+    color: #9aa0a6;
   }
 }

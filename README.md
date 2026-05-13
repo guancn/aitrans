@@ -6,7 +6,7 @@
 
 高颜值、不打扰的 Chrome 划词翻译扩展。纯原生 JS/HTML/CSS，零依赖，即装即用。
 
-支持 **DeepSeek V4 Flash AI 翻译**（需 API Key）和 **Google 翻译**（免费，无需 API Key），智能识别源语言。
+支持 **划词翻译**（图标悬停/直接弹窗）和 **全页翻译** 两种模式，DeepSeek V4 Flash AI 翻译 + Google 免费双引擎。全页翻译自动遍历页面文字并批量翻译，进度条实时反馈。
 
 <p align="center">
   <img src="icons/icon128.png" width="128" alt="aitrans icon">
@@ -15,9 +15,10 @@
 ## 特性
 
 - 🎯 **划词即译** — 选中文本自动弹出翻译，无需额外操作
-- 🤖 **双引擎** — DeepSeek V4 Flash（AI 意译）+ Google 翻译（免费）
+- 📄 **全页翻译** — 一键翻译整个网页，TreeWalker + 并发批量调度
+- 🤖 **双引擎** — DeepSeek V4 Flash（AI 意译）+ Google 翻译（免费），两种模式独立配置
 - 🌙 **暗色模式** — 自动适配系统 `prefers-color-scheme`
-- ⚡ **极致轻量** — 完整扩展仅 ~34KB，每页常态占用 ~12KB 内存
+- ⚡ **极致轻量** — 完整扩展仅 ~60KB，每页注入约 20KB
 - 🔒 **零隐私泄漏** — 翻译请求直连 API，无中间服务器
 - 🎨 **美观不打扰** — 毛玻璃弹窗 + 流畅动画，融入页面不突兀
 - 🌍 **8 种目标语言** — 简中/英/日/韩/法/德/西/俄
@@ -37,7 +38,9 @@
 
 ## 配置
 
-点击扩展图标，在弹窗中设置：
+点击扩展图标，通过顶部分段控件切换「划词翻译」和「全页翻译」两种模式，各自独立配置：
+
+**划词翻译模式：**
 
 | 设置项 | 说明 | 默认值 |
 |--------|------|--------|
@@ -45,7 +48,17 @@
 | 划词后行为 | `图标`（悬停翻译）/ `直接`（立即翻译） | 图标 |
 | 翻译服务 | `DeepSeek`（需 API Key）/ `Google`（免费） | DeepSeek |
 | API Key | DeepSeek API Key（选 Google 时隐藏） | — |
-| 翻译提示词 | 自定义 system prompt，`{{targetLang}}` 替换为目标语言 | 宝玉翻译理念 |
+| 翻译提示词 | 自定义 system prompt | 宝玉翻译理念 |
+
+**全页翻译模式：**
+
+| 设置项 | 说明 | 默认值 |
+|--------|------|--------|
+| 翻译为 | 目标语言 | 简体中文 |
+| 翻译服务 | `DeepSeek` / `Google` | Google（免费） |
+| API Key | DeepSeek API Key（选 Google 时隐藏） | — |
+| 翻译提示词 | 自定义 system prompt | 宝玉翻译理念 |
+| 翻译当前网页 | 点击按钮立即翻译当前页面全部文字 | — |
 
 ### 获取 DeepSeek API Key
 
@@ -56,13 +69,20 @@
 ## 架构
 
 ```
-用户划选文本
-  → content.js 捕获 mouseup，根据模式显示图标或弹窗
-  → chrome.runtime.sendMessage() 发给 background.js
-  → background.js 根据 translationService 路由：
-      · deepseek: POST api.deepseek.com/v1/chat/completions
-      · google:   POST translate.googleapis.com/translate_a/single
-  → 解析结果，回传 content.js 渲染
+划词翻译模式：
+  用户划选文本
+    → content.js 捕获 mouseup，根据 triggerMode 显示图标或弹窗
+    → chrome.runtime.sendMessage() 发给 background.js
+    → background.js 根据 translationService 路由 DeepSeek / Google
+    → 回传译文，content.js 渲染弹窗
+
+全页翻译模式：
+  用户点击「翻译当前网页」
+    → content.js TreeWalker 遍历页面文本节点
+    → 并发批量调度（每次 3 批），逐批发送 translateBatch
+    → background.js 工作池并发调用翻译 API
+    → node.nodeValue 原位替换（不破坏 React/Vue 虚拟 DOM）
+    → 进度条实时反馈
 ```
 
 三组件，零构建，原生 JS：
@@ -70,16 +90,14 @@
 ```
 aitrans/
 ├── manifest.json     # Chrome 扩展清单
-├── background.js     # Service Worker（API 调用、配置缓存）
-├── content.js        # 内容脚本（划词检测、弹窗渲染）
-├── content.css       # 注入样式（命名空间隔离）
-├── popup.html        # 设置弹窗
-├── popup.js          # 设置逻辑
+├── background.js     # Service Worker（API 调用、批量翻译工作池）
+├── content.js        # 内容脚本（划词检测、全页翻译、弹窗渲染）
+├── content.css       # 注入样式（命名空间隔离 + 进度条）
+├── popup.html        # 设置弹窗（分段控件双模式）
+├── popup.js          # 设置逻辑（独立配置存储）
 ├── popup.css         # 设置样式（含暗色模式）
 └── icons/            # 扩展图标
 ```
-
-完整架构说明见 [CLAUDE.md](CLAUDE.md)。
 
 ## 隐私
 

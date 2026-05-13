@@ -12,7 +12,7 @@ const DEFAULT_SYSTEM_PROMPT =
   'Output ONLY JSON (no markdown fences): {"source_lang":"<detected>","translated_text":"<translation>"}';
 
 // 缓存用户配置，避免每次翻译时查询 storage 产生延迟
-let userConfig = { targetLang: 'zh-CN', translationService: 'deepseek', apiKey: '', systemPrompt: DEFAULT_SYSTEM_PROMPT };
+let userConfig = { targetLang: 'zh-CN', translationService: 'deepseek', apiKey: '', systemPrompt: DEFAULT_SYSTEM_PROMPT, activeMode: 'selection', fp_targetLang: 'zh-CN', fp_translationService: 'google', fp_apiKey: '', fp_systemPrompt: DEFAULT_SYSTEM_PROMPT };
 
 const LANG_NAMES = {
   'zh-CN': 'Simplified Chinese',
@@ -26,12 +26,17 @@ const LANG_NAMES = {
 };
 
 try {
-  chrome.storage.sync.get(['targetLang', 'translationService', 'apiKey', 'systemPrompt'], (items) => {
+  chrome.storage.sync.get(['targetLang', 'translationService', 'apiKey', 'systemPrompt', 'activeMode', 'fp_targetLang', 'fp_translationService', 'fp_apiKey', 'fp_systemPrompt'], (items) => {
     if (!chrome.runtime.lastError && items) {
       if (items.targetLang) userConfig.targetLang = items.targetLang;
       if (items.translationService) userConfig.translationService = items.translationService;
       if (items.apiKey) userConfig.apiKey = items.apiKey;
       if (items.systemPrompt) userConfig.systemPrompt = items.systemPrompt;
+      if (items.activeMode) userConfig.activeMode = items.activeMode;
+      if (items.fp_targetLang) userConfig.fp_targetLang = items.fp_targetLang;
+      if (items.fp_translationService) userConfig.fp_translationService = items.fp_translationService;
+      if (items.fp_apiKey) userConfig.fp_apiKey = items.fp_apiKey;
+      if (items.fp_systemPrompt) userConfig.fp_systemPrompt = items.fp_systemPrompt;
     }
   });
 
@@ -41,6 +46,11 @@ try {
       if (changes.translationService) userConfig.translationService = changes.translationService.newValue;
       if (changes.apiKey) userConfig.apiKey = changes.apiKey.newValue;
       if (changes.systemPrompt) userConfig.systemPrompt = changes.systemPrompt.newValue;
+      if (changes.activeMode) userConfig.activeMode = changes.activeMode.newValue;
+      if (changes.fp_targetLang) userConfig.fp_targetLang = changes.fp_targetLang.newValue;
+      if (changes.fp_translationService) userConfig.fp_translationService = changes.fp_translationService.newValue;
+      if (changes.fp_apiKey) userConfig.fp_apiKey = changes.fp_apiKey.newValue;
+      if (changes.fp_systemPrompt) userConfig.fp_systemPrompt = changes.fp_systemPrompt.newValue;
     }
   });
 } catch (e) {
@@ -55,8 +65,11 @@ async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries 
 
   // maxRetries 不含首次尝试，总计最多 (maxRetries + 1) 次请求
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
     try {
       const response = await fetch(url, {
+        signal: controller.signal,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -73,6 +86,8 @@ async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries 
           thinking: { type: 'disabled' }
         })
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
@@ -137,6 +152,7 @@ async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries 
         };
       }
       await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+      clearTimeout(timeoutId);
     }
   }
 }
@@ -146,12 +162,17 @@ async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries 
 async function translateWithGoogle(text, targetLang) {
   const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t&dj=1`;
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20000);
   try {
     const response = await fetch(url, {
+      signal: controller.signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: `q=${encodeURIComponent(text)}`
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       throw new Error(`Google 翻译请求失败 (HTTP ${response.status})`);
@@ -181,6 +202,34 @@ async function translateWithGoogle(text, targetLang) {
   }
 }
 
+// 批量翻译：并发工作池（信号量模式），按原始索引返回结果
+async function translateBatch(texts, targetLang, apiKey, systemPrompt, service, maxConcurrency) {
+  const results = new Array(texts.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < texts.length) {
+      const i = nextIndex++;
+      try {
+        if (service === 'google') {
+          results[i] = await translateWithGoogle(texts[i], targetLang);
+        } else {
+          results[i] = await translateText(texts[i], targetLang, apiKey, systemPrompt);
+        }
+      } catch (e) {
+        results[i] = { success: false, error: e.message || '批量翻译失败' };
+      }
+    }
+  }
+
+  const pool = [];
+  for (let j = 0; j < maxConcurrency; j++) {
+    pool.push(worker());
+  }
+  await Promise.all(pool);
+  return results;
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'translate') {
     const service = userConfig.translationService || 'deepseek';
@@ -188,14 +237,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // Google 翻译路径：免费，无需 API Key
     if (service === 'google') {
       translateWithGoogle(request.text, userConfig.targetLang)
-        .then(sendResponse);
+        .then(sendResponse)
+        .catch(() => {});
       return true;
     }
 
-    // DeepSeek 翻译路径：需 API Key
     if (userConfig.apiKey) {
       translateText(request.text, userConfig.targetLang, userConfig.apiKey, userConfig.systemPrompt)
-        .then(sendResponse);
+        .then(sendResponse)
+        .catch(() => {});
     } else {
       chrome.storage.sync.get({
         targetLang: 'zh-CN',
@@ -207,7 +257,40 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           return;
         }
         translateText(request.text, items.targetLang, items.apiKey, items.systemPrompt)
-          .then(sendResponse);
+          .then(sendResponse)
+          .catch(() => {});
+      });
+    }
+    return true;
+  }
+
+  if (request.action === 'translateBatch') {
+    const service = userConfig.fp_translationService || 'google';
+
+    if (service === 'google') {
+      translateBatch(request.texts, userConfig.fp_targetLang, '', '', 'google', 5)
+        .then(sendResponse)
+        .catch(() => {});
+      return true;
+    }
+
+    if (userConfig.fp_apiKey) {
+      translateBatch(request.texts, userConfig.fp_targetLang, userConfig.fp_apiKey, userConfig.fp_systemPrompt, 'deepseek', 3)
+        .then(sendResponse)
+        .catch(() => {});
+    } else {
+      chrome.storage.sync.get({
+        fp_targetLang: 'zh-CN',
+        fp_apiKey: '',
+        fp_systemPrompt: DEFAULT_SYSTEM_PROMPT
+      }, (items) => {
+        if (!items.fp_apiKey) {
+          sendResponse([{ success: false, error: '请先在扩展设置中填写 DeepSeek API Key' }]);
+          return;
+        }
+        translateBatch(request.texts, items.fp_targetLang, items.fp_apiKey, items.fp_systemPrompt, 'deepseek', 3)
+          .then(sendResponse)
+          .catch(() => {});
       });
     }
     return true;
