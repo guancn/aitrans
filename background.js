@@ -134,7 +134,8 @@ async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries 
           success: true,
           originalText: text,
           translatedText: parsed.translated_text,
-          sourceLang: parsed.source_lang || 'auto'
+          sourceLang: parsed.source_lang || 'auto',
+          service: 'deepseek'
         };
       }
 
@@ -192,7 +193,8 @@ async function translateWithGoogle(text, targetLang) {
       success: true,
       originalText: text,
       translatedText,
-      sourceLang
+      sourceLang,
+      service: 'google'
     };
   } catch (error) {
     return {

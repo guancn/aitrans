@@ -257,7 +257,7 @@ function createAndShowPopup(text, x, y, replaceIcon = null, sourceStyleInfo = nu
           <div class="translate-ext-header">
              <span class="translate-ext-lang">${escapeHtml(response.sourceLang).toUpperCase()}</span>
              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-             <span class="translate-ext-logo">智能翻译</span>
+             <span class="translate-ext-logo">${response.service === 'google' ? 'Google 翻译' : 'DeepSeek AI'}</span>
              <div class="translate-ext-close">
                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
              </div>
