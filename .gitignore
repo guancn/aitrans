@@ -1,0 +1,9 @@
+.DS_Store
+Thumbs.db
+*.zip
+*.swp
+*.swo
+*~
+*.bak
+docs/
+.gitignore
