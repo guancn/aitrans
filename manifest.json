@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "极简划词翻译",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "高颜值、不打扰的划词翻译插件。支持划词翻译和全页翻译两种模式，DeepSeek V4 Flash AI 与免费 Google 双引擎，即划即译。",
   "permissions": [
     "storage"

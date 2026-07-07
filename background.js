@@ -59,7 +59,8 @@ try {
 
 async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries = 2) {
   const targetLangName = LANG_NAMES[targetLang] || targetLang;
-  const finalPrompt = systemPrompt.replace('{{targetLang}}', targetLangName);
+  // 全局替换：默认提示词中 {{targetLang}} 出现多次，单次 replace 会漏掉后面的
+  const finalPrompt = systemPrompt.replace(/\{\{targetLang\}\}/g, targetLangName);
 
   const url = 'https://api.deepseek.com/v1/chat/completions';
 
@@ -82,7 +83,7 @@ async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries 
             { role: 'user', content: text }
           ],
           temperature: 0,
-          max_tokens: 1024,
+          max_tokens: 2048,
           thinking: { type: 'disabled' }
         })
       });
@@ -204,8 +205,123 @@ async function translateWithGoogle(text, targetLang) {
   }
 }
 
-// 批量翻译：并发工作池（信号量模式），按原始索引返回结果
+// 全页批量翻译专用提示词：一次请求翻译整个数组，请求数降到 1/N
+// 注意：全页批量走此固定提示词（不使用用户自定义 fp_systemPrompt），以换取吞吐量
+const BATCH_SYSTEM_PROMPT =
+  'You are a professional {{targetLang}} translator. ' +
+  'You will receive a JSON array of text segments. ' +
+  'Translate EACH segment into {{targetLang}}, naturally by meaning, not word-for-word. ' +
+  'Adapt idioms to sound native; preserve proper nouns, code, numbers, URLs and formatting as-is. ' +
+  'If a segment is already in {{targetLang}}, return it unchanged. ' +
+  'Output ONLY a JSON array of translated strings — same length and order as the input, ' +
+  'no markdown fences, no extra keys, no commentary.';
+
+// 从模型输出中提取字符串数组（容错：围栏清理 → 方括号定位 → 对象内首个数组）
+function parseJsonArray(content) {
+  const toStrArray = (p) => Array.isArray(p) ? p.map(x => (typeof x === 'string' ? x : String(x))) : null;
+
+  const extracted = content
+    .replace(/```(?:json)?\s*/gi, '')
+    .replace(/```/g, '')
+    .trim();
+
+  try {
+    const p = JSON.parse(extracted);
+    const arr = toStrArray(p);
+    if (arr) return arr;
+    // 模型可能包了一层对象，如 {"translations":[...]}
+    if (p && typeof p === 'object') {
+      for (const v of Object.values(p)) {
+        const inner = toStrArray(v);
+        if (inner) return inner;
+      }
+    }
+  } catch (_) { /* 继续尝试方括号定位 */ }
+
+  const start = extracted.indexOf('[');
+  const end = extracted.lastIndexOf(']');
+  if (start !== -1 && end > start) {
+    try {
+      return toStrArray(JSON.parse(extracted.slice(start, end + 1)));
+    } catch (_) { /* 放弃 */ }
+  }
+  return null;
+}
+
+// DeepSeek 数组批量：一次请求翻译整批，成功返回 string[]，失败返回 null（由上层逐条回退）
+async function translateBatchDeepSeek(texts, targetLang, apiKey, maxRetries = 2) {
+  const targetLangName = LANG_NAMES[targetLang] || targetLang;
+  const finalPrompt = BATCH_SYSTEM_PROMPT.replace(/\{\{targetLang\}\}/g, targetLangName);
+  const url = 'https://api.deepseek.com/v1/chat/completions';
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: 'deepseek-v4-flash',
+          messages: [
+            { role: 'system', content: finalPrompt },
+            { role: 'user', content: JSON.stringify(texts) }
+          ],
+          temperature: 0,
+          max_tokens: 4096,
+          thinking: { type: 'disabled' }
+        })
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        // 429 退避重试；其余（含 401/403）直接回退逐条，让上层拿到明确错误
+        if (response.status === 429 && attempt < maxRetries) {
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+          continue;
+        }
+        return null;
+      }
+
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content || '';
+      const arr = parseJsonArray(content);
+      // 数量必须与输入严格一致，否则无法对齐 → 回退逐条保证正确性
+      if (arr && arr.length === texts.length) return arr;
+      return null;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (attempt === maxRetries) return null;
+      await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+    }
+  }
+  return null;
+}
+
+// 批量翻译：DeepSeek 优先走单请求数组批量，失败/Google 回退并发工作池
 async function translateBatch(texts, targetLang, apiKey, systemPrompt, service, maxConcurrency) {
+  if (texts.length === 0) return [];
+
+  // DeepSeek 快路径：整批一次请求
+  if (service === 'deepseek') {
+    const batched = await translateBatchDeepSeek(texts, targetLang, apiKey);
+    if (batched) {
+      return batched.map((t, i) => ({
+        success: true,
+        originalText: texts[i],
+        translatedText: t,
+        sourceLang: 'auto',
+        service: 'deepseek'
+      }));
+    }
+    // 批量失败 → 落到下方逐条工作池（保留质量与错误信息）
+  }
+
   const results = new Array(texts.length);
   let nextIndex = 0;
 
@@ -232,7 +348,7 @@ async function translateBatch(texts, targetLang, apiKey, systemPrompt, service, 
   return results;
 }
 
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   if (request.action === 'translate') {
     const service = userConfig.translationService || 'deepseek';
 
@@ -287,7 +403,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         fp_systemPrompt: DEFAULT_SYSTEM_PROMPT
       }, (items) => {
         if (!items.fp_apiKey) {
-          sendResponse([{ success: false, error: '请先在扩展设置中填写 DeepSeek API Key' }]);
+          sendResponse(request.texts.map(() => ({ success: false, error: '请先在扩展设置中填写 DeepSeek API Key' })));
           return;
         }
         translateBatch(request.texts, items.fp_targetLang, items.fp_apiKey, items.fp_systemPrompt, 'deepseek', 3)

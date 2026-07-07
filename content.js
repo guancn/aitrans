@@ -330,6 +330,8 @@ function* walkTextNodes(root = document.body) {
       // 跳过空白或太短的文本
       const txt = (node.nodeValue || '').trim();
       if (txt.length < 1) return NodeFilter.FILTER_REJECT;
+      // 跳过纯数字/符号（"123"、"•"、"→"、"$"）——无字母/CJK 不必翻译，省请求
+      if (!/[\p{L}]/u.test(txt)) return NodeFilter.FILTER_REJECT;
 
       return NodeFilter.FILTER_ACCEPT;
     }
@@ -358,27 +360,30 @@ async function startPageTranslation() {
     const nodes = Array.from(walkTextNodes());
     if (nodes.length === 0) return;
 
-    // 保存原文
+    showProgress('正在收集文本...', 0);
+
+    // 拆出每个节点的前后空白，只翻译中间实体部分（回填时补回空白，避免行内文本粘连）
+    const items = [];
     for (const node of nodes) {
       if (!originalTexts.has(node)) {
         originalTexts.set(node, node.nodeValue);
       }
+      const m = (node.nodeValue || '').match(/^(\s*)([\s\S]*?)(\s*)$/);
+      const core = m[2];
+      if (!core) continue;
+      items.push({ node, lead: m[1], core, trail: m[3] });
     }
+    if (items.length === 0) return;
 
-    showProgress('正在收集文本...', 0);
+    // 去重：整页大量重复文本（导航、页脚、重复标签）只翻一次
+    const uniqueTexts = [...new Set(items.map(it => it.core))];
+    const translations = new Map();
 
-    // 提取纯文本数组
-    const texts = nodes.map(n => (n.nodeValue || '').trim());
-
-    // 分批发送（每批最多 20 条）
+    // 分批发送唯一文本（每批最多 20 条）
     const BATCH_SIZE = 20;
     const batches = [];
-    for (let i = 0; i < texts.length; i += BATCH_SIZE) {
-      batches.push({
-        index: i,
-        texts: texts.slice(i, i + BATCH_SIZE),
-        nodes: nodes.slice(i, i + BATCH_SIZE)
-      });
+    for (let i = 0; i < uniqueTexts.length; i += BATCH_SIZE) {
+      batches.push(uniqueTexts.slice(i, i + BATCH_SIZE));
     }
 
     const total = batches.length;
@@ -390,10 +395,10 @@ async function startPageTranslation() {
     // 并发批量调度：每次最多 MAX_CONCURRENT 批并行
     for (let i = 0; i < batches.length; i += MAX_CONCURRENT) {
       const chunk = batches.slice(i, i + MAX_CONCURRENT);
-      const results = await Promise.all(chunk.map(batch =>
+      const results = await Promise.all(chunk.map(batchTexts =>
         new Promise((resolve) => {
           chrome.runtime.sendMessage(
-            { action: 'translateBatch', texts: batch.texts },
+            { action: 'translateBatch', texts: batchTexts },
             (response) => {
               resolve(chrome.runtime.lastError ? null : response);
             }
@@ -401,16 +406,15 @@ async function startPageTranslation() {
         })
       ));
 
-      // 处理结果
+      // 收集译文到 map（按唯一文本对齐）
       for (let j = 0; j < chunk.length; j++) {
-        const batch = chunk[j];
+        const batchTexts = chunk[j];
         const result = results[j];
         if (result && Array.isArray(result)) {
           for (let k = 0; k < result.length; k++) {
-            const node = batch.nodes[k];
             const r = result[k];
-            if (r && r.success && r.translatedText && node) {
-              node.nodeValue = r.translatedText;
+            if (r && r.success && r.translatedText) {
+              translations.set(batchTexts[k], r.translatedText);
             }
           }
         }
@@ -418,7 +422,13 @@ async function startPageTranslation() {
       }
 
       const pct = Math.round((completed / total) * 100);
-      showProgress(`正在翻译... ${completed}/${total} 段 (${pct}%)`, pct);
+      showProgress(`正在翻译... ${pct}%`, pct);
+    }
+
+    // 回填：保留原节点前后空白
+    for (const it of items) {
+      const t = translations.get(it.core);
+      if (t) it.node.nodeValue = it.lead + t + it.trail;
     }
 
     showProgress('翻译完成', 100);
