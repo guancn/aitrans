@@ -1,0 +1,26 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- aitrans 工具栏图标母版 — Apple Liquid Glass 方形 App Icon，与划词按钮同款字形 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3A9BFF"/>
+      <stop offset="1" stop-color="#0071F0"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.40"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <!-- 超椭圆近似的圆角方（squircle） -->
+  <rect x="2" y="2" width="124" height="124" rx="29" fill="url(#bg)"/>
+  <!-- 顶部镜面高光弧 -->
+  <rect x="2" y="2" width="124" height="124" rx="29" fill="url(#gloss)"/>
+  <!-- SF 风格线性译文字形（Lucide languages），与页内按钮一致 -->
+  <g transform="translate(28,27) scale(3)" fill="none" stroke="#ffffff" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m5 8 6 6"/>
+    <path d="m4 14 6-6 2-3"/>
+    <path d="M2 5h12"/>
+    <path d="M7 2h1"/>
+    <path d="m22 22-5-10-5 10"/>
+    <path d="M14 18h6"/>
+  </g>
+</svg>
