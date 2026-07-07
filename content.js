@@ -14,11 +14,12 @@ try {
       }
     });
     chrome.storage.onChanged.addListener((changes, area) => {
+      // 键被 remove 时 newValue 为 undefined，用 ?? 回退默认值防止配置被污染
       if (area === 'sync' && changes.triggerMode) {
-        userConfig.triggerMode = changes.triggerMode.newValue;
+        userConfig.triggerMode = changes.triggerMode.newValue ?? 'icon';
       }
       if (area === 'sync' && changes.activeMode) {
-        userConfig.activeMode = changes.activeMode.newValue;
+        userConfig.activeMode = changes.activeMode.newValue ?? 'selection';
       }
     });
   }
@@ -141,10 +142,15 @@ function showIcon(text, x, y, sourceStyleInfo) {
   
   iconContainer = document.createElement('div');
   iconContainer.id = 'chrome-ext-translate-icon';
-  // Built-in lightweight SVG Translate Icon
+  // SF Symbols 风格线性译文字形（currentColor 上色，描边样式见 content.css）
   iconContainer.innerHTML = `
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0014.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z" fill="#ffffff"/>
+    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+      <path d="m5 8 6 6"/>
+      <path d="m4 14 6-6 2-3"/>
+      <path d="M2 5h12"/>
+      <path d="M7 2h1"/>
+      <path d="m22 22-5-10-5 10"/>
+      <path d="M14 18h6"/>
     </svg>
   `;
   
@@ -162,7 +168,6 @@ function showIcon(text, x, y, sourceStyleInfo) {
     if (translated) return; // Prevent multiple requests when hovering repeatedly
     hoverTimeout = setTimeout(() => {
        translated = true;
-       iconContainer.classList.add('loading');
        createAndShowPopup(text, x, y, iconContainer, sourceStyleInfo);
     }, 150); // slight delay
   });
@@ -227,7 +232,8 @@ function createAndShowPopup(text, x, y, replaceIcon = null, sourceStyleInfo = nu
   // 15 秒超时保护，防止 Service Worker 无响应导致 loading spinner 永久卡死
   const TRANSLATE_TIMEOUT_MS = 15000;
   const timeoutId = setTimeout(() => {
-    if (popupContainer) {
+    // 必须校验 requestId：旧请求的定时器不能覆盖用户新发起的翻译弹窗
+    if (requestId === activeRequestId && popupContainer) {
       popupContainer.innerHTML = `<div class="translate-ext-error">翻译超时，请重试</div>`;
     }
   }, TRANSLATE_TIMEOUT_MS);
@@ -316,22 +322,27 @@ function* walkTextNodes(root = document.body) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       if (!node || !node.parentElement) return NodeFilter.FILTER_REJECT;
-      const tag = node.parentElement.tagName;
-      if (SKIP_TAGS.has(tag)) return NodeFilter.FILTER_REJECT;
 
-      // 跳过插件自己的 UI 元素
+      // 廉价文本检查前置：先淘汰空白和纯数字/符号节点，再做较贵的 DOM 遍历
+      const txt = (node.nodeValue || '').trim();
+      if (txt.length < 1) return NodeFilter.FILTER_REJECT;
+      // 无字母/CJK 不必翻译（"123"、"•"、"→"、"$"），省请求省 token
+      if (!/[\p{L}]/u.test(txt)) return NodeFilter.FILTER_REJECT;
+
+      // 沿祖先链单次遍历：跳过 SKIP_TAGS（含嵌套，如 <pre><span>高亮代码</span></pre>）、
+      // 插件自身 UI、以及显式标记不翻译的元素（translate="no" / .notranslate 通用约定）
       let el = node.parentElement;
       while (el) {
-        const id = el.id || '';
-        if (id.startsWith('chrome-ext-translate-')) return NodeFilter.FILTER_REJECT;
+        if (SKIP_TAGS.has(el.tagName.toUpperCase())) return NodeFilter.FILTER_REJECT;
+        if ((el.id || '').startsWith('chrome-ext-translate-')) return NodeFilter.FILTER_REJECT;
+        if (el.getAttribute('translate') === 'no' || el.classList.contains('notranslate')) return NodeFilter.FILTER_REJECT;
         el = el.parentElement;
       }
 
-      // 跳过空白或太短的文本
-      const txt = (node.nodeValue || '').trim();
-      if (txt.length < 1) return NodeFilter.FILTER_REJECT;
-      // 跳过纯数字/符号（"123"、"•"、"→"、"$"）——无字母/CJK 不必翻译，省请求
-      if (!/[\p{L}]/u.test(txt)) return NodeFilter.FILTER_REJECT;
+      // 跳过不可见文本（display:none 的菜单/折叠面板/隐藏 modal，常占页面文本 30%+ 的 token）
+      // checkVisibility 为 Chrome 105+，旧版本安全降级为不过滤
+      const parent = node.parentElement;
+      if (parent.checkVisibility && !parent.checkVisibility()) return NodeFilter.FILTER_REJECT;
 
       return NodeFilter.FILTER_ACCEPT;
     }
@@ -373,18 +384,30 @@ async function startPageTranslation() {
       if (!core) continue;
       items.push({ node, lead: m[1], core, trail: m[3] });
     }
-    if (items.length === 0) return;
+    if (items.length === 0) { hideProgress(); return; }
 
     // 去重：整页大量重复文本（导航、页脚、重复标签）只翻一次
     const uniqueTexts = [...new Set(items.map(it => it.core))];
     const translations = new Map();
 
-    // 分批发送唯一文本（每批最多 20 条）
-    const BATCH_SIZE = 20;
+    // 按字符预算切批：固定条数遇长段落易超 max_tokens=4096 → 输出 JSON 截断 →
+    // 长度对不上 → 整批回退逐条（N 个请求 + N 份 system prompt），token 反而爆炸。
+    // 字符预算让短文本一批塞更多、长文本自动少塞，截断率大幅下降。
+    const BATCH_CHAR_BUDGET = 1800;
+    const BATCH_MAX_ITEMS = 30;
     const batches = [];
-    for (let i = 0; i < uniqueTexts.length; i += BATCH_SIZE) {
-      batches.push(uniqueTexts.slice(i, i + BATCH_SIZE));
+    let batch = [];
+    let batchChars = 0;
+    for (const t of uniqueTexts) {
+      if (batch.length > 0 && (batchChars + t.length > BATCH_CHAR_BUDGET || batch.length >= BATCH_MAX_ITEMS)) {
+        batches.push(batch);
+        batch = [];
+        batchChars = 0;
+      }
+      batch.push(t);
+      batchChars += t.length;
     }
+    if (batch.length > 0) batches.push(batch);
 
     const total = batches.length;
     let completed = 0;
@@ -474,6 +497,9 @@ function showProgress(msg, pct) {
     progressText.className = 'translate-ext-progress-text';
     progressText.style.top = `${window.scrollY + 8}px`;
     document.body.appendChild(progressText);
+
+    // 懒注册：仅进度条存在期间监听滚动，避免在每个页面常驻高频回调
+    document.addEventListener('scroll', handleProgressScroll, { passive: true });
   }
 
   // 滚动时更新位置
@@ -487,16 +513,16 @@ function showProgress(msg, pct) {
 function hideProgress() {
   if (progressBar) { progressBar.remove(); progressBar = null; progressFill = null; }
   if (progressText) { progressText.remove(); progressText = null; }
+  document.removeEventListener('scroll', handleProgressScroll);
 }
 
-// 滚动时更新进度条位置
+// 滚动时更新进度条位置（仅在进度条存在期间挂载，见 showProgress/hideProgress）
 function handleProgressScroll() {
   if (progressBar) {
     progressBar.style.top = `${window.scrollY}px`;
     if (progressText) progressText.style.top = `${window.scrollY + 8}px`;
   }
 }
-document.addEventListener('scroll', handleProgressScroll, { passive: true });
 
 // ─── 消息监听 ────────────────────────────────────────────
 
