@@ -15,20 +15,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const targetLangSelect = document.getElementById('targetLang');
   const triggerModeSelect = document.getElementById('triggerMode');
   const translationServiceSelect = document.getElementById('translationService');
-  const apiKeyInput = document.getElementById('apiKey');
-  const toggleBtn = document.getElementById('toggleApiKey');
+  const modelWarning = document.getElementById('modelWarning');
   const systemPromptInput = document.getElementById('systemPrompt');
   const resetBtn = document.getElementById('resetPrompt');
-  const apiKeySection = document.getElementById('apiKeySection');
   const promptSection = document.getElementById('promptSection');
   // 全页翻译模式
   const fpTargetLangSelect = document.getElementById('fpTargetLang');
   const fpTranslationServiceSelect = document.getElementById('fpTranslationService');
-  const fpApiKeyInput = document.getElementById('fpApiKey');
-  const fpToggleBtn = document.getElementById('fpToggleApiKey');
+  const fpModelWarning = document.getElementById('fpModelWarning');
   const fpSystemPromptInput = document.getElementById('fpSystemPrompt');
   const fpResetBtn = document.getElementById('fpResetPrompt');
-  const fpApiKeySection = document.getElementById('fpApiKeySection');
   const fpPromptSection = document.getElementById('fpPromptSection');
   const translatePageBtn = document.getElementById('translatePageBtn');
   const pageTranslateStatus = document.getElementById('pageTranslateStatus');
@@ -41,6 +37,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const saveStatus = document.getElementById('saveStatus');
 
   let currentMode = 'selection';
+  let models = [];
 
   // ─── 从旧 fullPageTranslate 迁移 ──────────
   function migrateFromOldConfig(allItems) {
@@ -72,17 +69,46 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // ─── 按模式切换 DeepSeek 设置可见性 ─────────────
-  function toggleDeepSeekSections() {
-    if (currentMode === 'selection') {
-      const isDeepSeek = translationServiceSelect.value === 'deepseek';
-      apiKeySection.style.display = isDeepSeek ? '' : 'none';
-      promptSection.style.display = isDeepSeek ? '' : 'none';
-    } else {
-      const isDeepSeek = fpTranslationServiceSelect.value === 'deepseek';
-      fpApiKeySection.style.display = isDeepSeek ? '' : 'none';
-      fpPromptSection.style.display = isDeepSeek ? '' : 'none';
+  // ─── 翻译服务下拉：Google + 模型列表 ─────────
+  function renderServiceOptions(select, value) {
+    select.textContent = '';
+    const add = (v, label) => {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = label;
+      select.appendChild(o);
+    };
+    add('google', 'Google 翻译 (免费)');
+    for (const m of models) add(m.id, m.name);
+    select.value = value === 'google' || models.some(m => m.id === value) ? value : 'google';
+  }
+
+  // 所选模型缺 Key / 未授权时提示，点击跳转模型管理
+  function updateModelWarning(select, warnEl) {
+    warnEl.hidden = true;
+    const m = models.find(x => x.id === select.value);
+    if (!m) return;
+    if (!m.apiKey) {
+      warnEl.textContent = '该模型未填写 API Key，点此前往模型管理';
+      warnEl.hidden = false;
+      return;
     }
+    let origin;
+    try { origin = new URL(m.baseUrl).origin + '/*'; } catch (_) { return; }
+    chrome.permissions.contains({ origins: [origin] }).then((ok) => {
+      if (!ok && select.value === m.id) {
+        warnEl.textContent = '未授权访问该模型地址，点此前往模型管理';
+        warnEl.hidden = false;
+      }
+    }).catch(() => {});
+  }
+
+  // ─── 选 Google 时隐藏提示词区与模型警告 ─────────────
+  function toggleModelSections() {
+    promptSection.style.display = translationServiceSelect.value === 'google' ? 'none' : '';
+    updateModelWarning(translationServiceSelect, modelWarning);
+    fpPromptSection.style.display = fpTranslationServiceSelect.value === 'google' ? 'none' : '';
+    updateModelWarning(fpTranslationServiceSelect, fpModelWarning);
   }
 
   // ─── 各模式独立的保存函数 ───────────────────────
@@ -91,7 +117,6 @@ document.addEventListener('DOMContentLoaded', () => {
       targetLang: targetLangSelect.value,
       triggerMode: triggerModeSelect.value,
       translationService: translationServiceSelect.value,
-      apiKey: apiKeyInput.value.trim(),
       systemPrompt: systemPromptInput.value.trim() || DEFAULT_PROMPT
     }, saveCallback);
   }
@@ -100,7 +125,6 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.sync.set({
       fp_targetLang: fpTargetLangSelect.value,
       fp_translationService: fpTranslationServiceSelect.value,
-      fp_apiKey: fpApiKeyInput.value.trim(),
       fp_systemPrompt: fpSystemPromptInput.value.trim() || DEFAULT_PROMPT
     }, saveCallback);
   }
@@ -122,15 +146,21 @@ document.addEventListener('DOMContentLoaded', () => {
   segSelection.addEventListener('click', () => {
     if (currentMode === 'selection') return;
     renderActiveMode('selection');
-    toggleDeepSeekSections();
     chrome.storage.sync.set({ activeMode: 'selection' });
   });
 
   segFullpage.addEventListener('click', () => {
     if (currentMode === 'fullpage') return;
     renderActiveMode('fullpage');
-    toggleDeepSeekSections();
     chrome.storage.sync.set({ activeMode: 'fullpage' });
+  });
+
+  // ─── 模型管理入口 ─────────────────────────
+  document.querySelectorAll('.manage-models, .model-warning').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      chrome.runtime.openOptionsPage();
+    });
   });
 
   // ─── 翻译当前网页按钮 ─────────────────────────
@@ -173,55 +203,60 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // ─── 初始化：加载所有配置 ─────────────────────────
-  chrome.storage.sync.get({
-    // 划词翻译默认值
-    targetLang: 'zh-CN',
-    triggerMode: 'icon',
-    translationService: 'deepseek',
-    apiKey: '',
-    systemPrompt: DEFAULT_PROMPT,
-    // 全页翻译默认值
-    fp_targetLang: 'zh-CN',
-    fp_translationService: 'google',
-    fp_apiKey: '',
-    fp_systemPrompt: DEFAULT_PROMPT,
-    // 全局
-    activeMode: 'selection',
-    // 迁移键
-    fullPageTranslate: undefined
-  }, (items) => {
-    // 迁移检查
-    const migrated = migrateFromOldConfig(items);
+  function loadAll() {
+    chrome.storage.sync.get({
+      // 划词翻译默认值
+      targetLang: 'zh-CN',
+      triggerMode: 'icon',
+      translationService: 'deepseek',
+      systemPrompt: DEFAULT_PROMPT,
+      // 全页翻译默认值
+      fp_targetLang: 'zh-CN',
+      fp_translationService: 'google',
+      fp_systemPrompt: DEFAULT_PROMPT,
+      // 全局
+      activeMode: 'selection',
+      models: [],
+      // 迁移键
+      fullPageTranslate: undefined
+    }, (items) => {
+      models = Array.isArray(items.models) ? items.models : [];
+      const migrated = migrateFromOldConfig(items);
 
-    // 设置划词翻译模式值
-    targetLangSelect.value = items.targetLang;
-    triggerModeSelect.value = items.triggerMode;
-    translationServiceSelect.value = items.translationService;
-    apiKeyInput.value = items.apiKey;
-    systemPromptInput.value = items.systemPrompt || DEFAULT_PROMPT;
+      targetLangSelect.value = items.targetLang;
+      triggerModeSelect.value = items.triggerMode;
+      renderServiceOptions(translationServiceSelect, items.translationService);
+      systemPromptInput.value = items.systemPrompt || DEFAULT_PROMPT;
 
-    // 设置全页翻译模式值
-    fpTargetLangSelect.value = items.fp_targetLang;
-    fpTranslationServiceSelect.value = items.fp_translationService;
-    fpApiKeyInput.value = items.fp_apiKey;
-    fpSystemPromptInput.value = items.fp_systemPrompt || DEFAULT_PROMPT;
+      fpTargetLangSelect.value = items.fp_targetLang;
+      renderServiceOptions(fpTranslationServiceSelect, items.fp_translationService);
+      fpSystemPromptInput.value = items.fp_systemPrompt || DEFAULT_PROMPT;
 
-    // 设置当前模式
-    renderActiveMode(migrated ? 'fullpage' : (items.activeMode || 'selection'));
-    toggleDeepSeekSections();
+      renderActiveMode(migrated ? 'fullpage' : (items.activeMode || 'selection'));
+      toggleModelSections();
+    });
+  }
+
+  // 先让 background 完成旧 apiKey → 模型列表的迁移（同时唤醒 SW），再读取存储
+  chrome.runtime.sendMessage({ action: 'ensureConfig' }, () => {
+    void chrome.runtime.lastError;
+    loadAll();
+  });
+
+  // 选项页增删模型时实时刷新下拉
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'sync' || !changes.models) return;
+    models = changes.models.newValue || [];
+    renderServiceOptions(translationServiceSelect, translationServiceSelect.value);
+    renderServiceOptions(fpTranslationServiceSelect, fpTranslationServiceSelect.value);
+    toggleModelSections();
   });
 
   // ─── 划词翻译模式事件监听 ────────────────
   targetLangSelect.addEventListener('change', saveSelectionSettings);
   triggerModeSelect.addEventListener('change', saveSelectionSettings);
-  translationServiceSelect.addEventListener('change', () => { toggleDeepSeekSections(); saveSelectionSettings(); });
-  apiKeyInput.addEventListener('blur', saveSelectionSettings);
-  apiKeyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') apiKeyInput.blur(); });
+  translationServiceSelect.addEventListener('change', () => { toggleModelSections(); saveSelectionSettings(); });
   systemPromptInput.addEventListener('blur', saveSelectionSettings);
-
-  toggleBtn.addEventListener('click', () => {
-    apiKeyInput.type = apiKeyInput.type === 'password' ? 'text' : 'password';
-  });
 
   resetBtn.addEventListener('click', () => {
     systemPromptInput.value = DEFAULT_PROMPT;
@@ -230,14 +265,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ─── 全页翻译模式事件监听 ─────────────────
   fpTargetLangSelect.addEventListener('change', saveFullpageSettings);
-  fpTranslationServiceSelect.addEventListener('change', () => { toggleDeepSeekSections(); saveFullpageSettings(); });
-  fpApiKeyInput.addEventListener('blur', saveFullpageSettings);
-  fpApiKeyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') fpApiKeyInput.blur(); });
+  fpTranslationServiceSelect.addEventListener('change', () => { toggleModelSections(); saveFullpageSettings(); });
   fpSystemPromptInput.addEventListener('blur', saveFullpageSettings);
-
-  fpToggleBtn.addEventListener('click', () => {
-    fpApiKeyInput.type = fpApiKeyInput.type === 'password' ? 'text' : 'password';
-  });
 
   fpResetBtn.addEventListener('click', () => {
     fpSystemPromptInput.value = DEFAULT_PROMPT;

@@ -58,3 +58,42 @@ test('选项页：增改删、手势内申请权限、测试连接', { skip }, (
   const r = runHarness('options', { models: [DEEPSEEK], translationService: 'deepseek', fp_translationService: 'google' }, scenario.toString());
   assert.deepEqual(r.failures, []);
 });
+
+test('popup：动态模型下拉、无 Key 输入、缺 Key 提示、管理模型入口', { skip }, () => {
+  const scenario = async () => {
+    const failures = [];
+    const check = (cond, msg) => { if (!cond) failures.push(msg); };
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const el = (id) => document.getElementById(id);
+
+    await sleep(100);
+    check(window.__calls.sendMessage.some(m => m.action === 'ensureConfig'), '应先请求 ensureConfig');
+    const opts = [...el('translationService').options].map(o => o.value);
+    check(JSON.stringify(opts) === '["google","deepseek","m_x"]', '划词下拉应为 Google + 模型列表：' + opts);
+    check(el('translationService').options[2].textContent === 'Claude', '选项文本应为模型名');
+    check(el('translationService').value === 'deepseek', '应选中已保存的模型');
+    check(el('fpTranslationService').value === 'm_x', '全页应选中 m_x');
+    check(!el('apiKey') && !el('fpApiKey'), '弹窗不应再有 API Key 输入框');
+    check(!el('modelWarning').hidden && el('modelWarning').textContent.includes('API Key'), '所选模型缺 Key 应提示');
+    check(el('promptSection').style.display !== 'none', '选模型时应显示提示词');
+
+    el('translationService').value = 'google';
+    el('translationService').dispatchEvent(new Event('change'));
+    await sleep(50);
+    check(window.__store.translationService === 'google', '切换服务应保存');
+    check(el('promptSection').style.display === 'none' && el('modelWarning').hidden, '选 Google 应隐藏提示词与警告');
+
+    document.querySelector('.manage-models').click();
+    check(window.__calls.openOptionsPage === 1, '「管理模型」应打开选项页');
+    return failures;
+  };
+  const store = {
+    models: [
+      { id: 'deepseek', name: 'DeepSeek Flash', protocol: 'openai', baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash', apiKey: '', thinking: 'off', extraParams: '' },
+      { id: 'm_x', name: 'Claude', protocol: 'anthropic', baseUrl: 'https://api.anthropic.com', model: 'claude-haiku-4-5', apiKey: 'k', thinking: 'default', extraParams: '' }
+    ],
+    translationService: 'deepseek', fp_translationService: 'm_x', activeMode: 'selection'
+  };
+  const r = runHarness('popup', store, scenario.toString());
+  assert.deepEqual(r.failures, []);
+});

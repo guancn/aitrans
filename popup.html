@@ -38,21 +38,12 @@
     </div>
 
     <div class="setting-item">
-      <label for="translationService">翻译服务：</label>
-      <select id="translationService">
-        <option value="deepseek">DeepSeek Flash (AI 翻译)</option>
-        <option value="google">Google 翻译 (免费)</option>
-      </select>
-    </div>
-
-    <div class="setting-item" id="apiKeySection">
-      <label for="apiKey">DeepSeek API Key：</label>
-      <div class="api-key-row">
-        <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
-        <button id="toggleApiKey" type="button">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-        </button>
+      <div class="label-row">
+        <label for="translationService">翻译服务：</label>
+        <a href="#" class="manage-models">管理模型</a>
       </div>
+      <select id="translationService"></select>
+      <p class="model-warning" id="modelWarning" hidden></p>
     </div>
 
     <div class="setting-item" id="promptSection">
@@ -77,20 +68,12 @@
         </select>
       </div>
       <div class="setting-item">
-        <label for="fpTranslationService">翻译服务：</label>
-        <select id="fpTranslationService">
-          <option value="deepseek">DeepSeek Flash (AI 翻译)</option>
-          <option value="google">Google 翻译 (免费)</option>
-        </select>
-      </div>
-      <div class="setting-item" id="fpApiKeySection">
-        <label for="fpApiKey">DeepSeek API Key：</label>
-        <div class="api-key-row">
-          <input type="password" id="fpApiKey" placeholder="sk-..." autocomplete="off">
-          <button id="fpToggleApiKey" type="button">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-          </button>
+        <div class="label-row">
+          <label for="fpTranslationService">翻译服务：</label>
+          <a href="#" class="manage-models">管理模型</a>
         </div>
+        <select id="fpTranslationService"></select>
+        <p class="model-warning" id="fpModelWarning" hidden></p>
       </div>
       <div class="setting-item" id="fpPromptSection">
         <label for="fpSystemPrompt">翻译提示词：</label>
