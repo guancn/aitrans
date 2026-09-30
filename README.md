@@ -6,7 +6,7 @@
 
 高颜值、不打扰的 Chrome 划词翻译扩展。纯原生 JS/HTML/CSS，零依赖，即装即用。
 
-支持 **划词翻译**（图标悬停/直接弹窗）和 **全页翻译** 两种模式，DeepSeek Flash AI 翻译 + Google 免费双引擎。全页翻译自动遍历页面文字并批量翻译，进度条实时反馈。
+支持 **划词翻译**（图标悬停/直接弹窗）和 **全页翻译** 两种模式，内置 DeepSeek Flash，可自行添加 OpenAI 兼容 / Anthropic 原生模型，另有免费 Google 翻译。全页翻译自动遍历页面文字并批量翻译，进度条实时反馈。
 
 <p align="center">
   <img src="icons/icon128.png" width="128" alt="aitrans icon">
@@ -16,7 +16,7 @@
 
 - 🎯 **划词即译** — 选中文本自动弹出翻译，无需额外操作
 - 📄 **全页翻译** — 一键翻译整个网页，视口内容优先翻译，每批译完立即显示
-- 🤖 **双引擎** — DeepSeek Flash（AI 意译）+ Google 翻译（免费），两种模式独立配置
+- 🤖 **自定义模型** — 内置 DeepSeek Flash，可添加任意 OpenAI 兼容或 Anthropic 原生模型（Base URL / 模型名 / Key / 思考深度 / 高级参数），另有免费 Google 翻译；两种模式各选各的
 - 🌙 **暗色模式** — 自动适配系统 `prefers-color-scheme`
 - ⚡ **极致轻量** — 完整扩展仅 ~60KB，每页注入约 20KB
 - 🔒 **零隐私泄漏** — 翻译请求直连 API，无中间服务器
@@ -46,8 +46,7 @@
 |--------|------|--------|
 | 翻译为 | 目标语言 | 简体中文 |
 | 划词后行为 | `图标`（悬停翻译）/ `直接`（立即翻译） | 图标 |
-| 翻译服务 | `DeepSeek`（需 API Key）/ `Google`（免费） | DeepSeek |
-| API Key | DeepSeek API Key（选 Google 时隐藏） | — |
+| 翻译服务 | `Google`（免费）或模型管理中添加的任一模型 | DeepSeek Flash |
 | 翻译提示词 | 自定义 system prompt | 宝玉翻译理念 |
 
 **全页翻译模式：**
@@ -55,16 +54,17 @@
 | 设置项 | 说明 | 默认值 |
 |--------|------|--------|
 | 翻译为 | 目标语言 | 简体中文 |
-| 翻译服务 | `DeepSeek` / `Google` | Google（免费） |
-| API Key | DeepSeek API Key（选 Google 时隐藏） | — |
+| 翻译服务 | `Google` 或任一模型 | Google（免费） |
 | 翻译提示词 | 自定义 system prompt | 宝玉翻译理念 |
 | 翻译当前网页 | 点击按钮立即翻译当前页面全部文字 | — |
 
-### 获取 DeepSeek API Key
+### 管理模型与 API Key
 
-1. 注册 [DeepSeek 开放平台](https://platform.deepseek.com/)
-2. 在「API Keys」页面创建新 Key
-3. 复制粘贴到扩展设置中
+在设置弹窗点「管理模型」打开模型管理页；保存模型时 Chrome 会请求访问该 API 域名的权限。
+
+1. 内置「DeepSeek Flash」：到 [DeepSeek 开放平台](https://platform.deepseek.com/) 创建 Key，填入该条目
+2. 其他模型：点新增，选择协议（OpenAI 兼容 / Anthropic），填写 Base URL、模型名、Key，可选思考深度与高级参数（JSON，深度合并进请求体）
+3. 点「测试连接」确认可用
 
 ## 架构
 
@@ -73,8 +73,8 @@
   用户划选文本
     → content.js 捕获 mouseup，根据 triggerMode 显示图标或弹窗
     → chrome.runtime.connect() 长连接发给 background.js
-    → background.js 根据 translationService 路由 DeepSeek / Google
-    → DeepSeek 流式回传，译文边生成边显示；Google 一次性回传
+    → background.js 根据 translationService 路由 Google / 模型列表（providers.js 适配协议）
+    → 模型流式回传，译文边生成边显示；Google 一次性回传
 
 全页翻译模式：
   用户点击「翻译当前网页」
@@ -91,28 +91,30 @@
 ```
 aitrans/
 ├── manifest.json     # Chrome 扩展清单
-├── background.js     # Service Worker（API 调用、批量翻译工作池）
+├── background.js     # Service Worker（模型路由、批量翻译工作池）
+├── providers.js      # 协议适配（OpenAI 兼容 / Anthropic 请求与流式解析）
 ├── content.js        # 内容脚本（划词检测、全页翻译、弹窗渲染）
 ├── content.css       # 注入样式（命名空间隔离 + 进度条）
 ├── popup.html        # 设置弹窗（分段控件双模式）
 ├── popup.js          # 设置逻辑（独立配置存储）
 ├── popup.css         # 设置样式（含暗色模式）
+├── options.html/js/css # 模型管理页
 └── icons/            # 扩展图标
 ```
 
 ## 隐私
 
 - **无数据收集** — 不接入任何分析、遥测、广告 SDK
-- **直连 API** — 翻译文本仅发送至 DeepSeek 或 Google API，不经第三方服务器
+- **直连 API** — 翻译文本仅发送至你配置的模型 API 或 Google API，不经第三方服务器
 - **本地存储** — API Key 和设置仅存于 Chrome 本地，通过 `chrome.storage.sync` 跨设备同步
-- **最小权限** — 仅请求 `storage` 和两个 API 域名权限
+- **最小权限** — 仅请求 `storage`、DeepSeek 与 Google 域名权限；自定义模型域名在保存时按需单独授权
 
 ## 技术栈
 
 - 纯原生 JavaScript（ES2020+）、HTML5、CSS3
 - Chrome Extension Manifest V3
 - Service Worker（事件驱动，空闲即终止）
-- DeepSeek Chat Completions API（OpenAI 兼容）
+- OpenAI 兼容 Chat Completions 与 Anthropic Messages API（含 SSE 流式）
 - Google Translate API（非官方端点）
 
 ## 兼容性
