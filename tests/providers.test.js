@@ -81,3 +81,12 @@ test('高级参数：非法 JSON / 非对象被忽略', () => {
   assert.equal(req({ protocol: 'openai', baseUrl: 'https://h', extraParams: '{bad' }).body.max_tokens, 2048);
   assert.equal(req({ protocol: 'openai', baseUrl: 'https://h', extraParams: '[1,2]' }).body.max_tokens, 2048);
 });
+
+test('高级参数深度合并保留兄弟键', () => {
+  const b = req({
+    protocol: 'anthropic', baseUrl: 'https://h', thinking: 'high',
+    extraParams: '{"output_config":{"foo":1}}'
+  }).body;
+  // 深度合并应保留原有的 effort，并加入新的 foo
+  assert.deepEqual(b.output_config, { effort: 'high', foo: 1 });
+});
