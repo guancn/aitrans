@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>模型管理 - 极简划词翻译</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="page">
+    <h1>模型管理</h1>
+    <div class="layout">
+      <aside class="model-list-pane">
+        <ul id="modelList"></ul>
+        <button id="addModel" type="button">＋ 新增模型</button>
+        <p id="limitHint" class="hint" hidden>最多 10 个模型</p>
+      </aside>
+
+      <form id="modelForm" autocomplete="off" novalidate>
+        <div class="field">
+          <label for="f_name">名称</label>
+          <input id="f_name" maxlength="40" placeholder="显示在翻译服务下拉中">
+        </div>
+        <div class="field">
+          <label for="f_protocol">协议</label>
+          <select id="f_protocol">
+            <option value="openai">OpenAI 兼容</option>
+            <option value="anthropic">Anthropic 原生</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="f_baseUrl">Base URL</label>
+          <input id="f_baseUrl" inputmode="url">
+          <p class="hint" id="baseUrlHint"></p>
+        </div>
+        <div class="field">
+          <label for="f_model">模型名</label>
+          <input id="f_model" placeholder="如 deepseek-flash、claude-haiku-4-5">
+        </div>
+        <div class="field">
+          <label for="f_apiKey">API Key</label>
+          <div class="key-row">
+            <input id="f_apiKey" type="password">
+            <button type="button" id="toggleKey">显示</button>
+          </div>
+          <p class="hint">本地模型（如 Ollama）可填任意值；Ollama 需设置环境变量 OLLAMA_ORIGINS=chrome-extension://*</p>
+        </div>
+        <div class="field">
+          <label for="f_thinking">思考深度</label>
+          <select id="f_thinking">
+            <option value="default">默认（不发送思考参数）</option>
+            <option value="off">关闭</option>
+            <option value="low">低</option>
+            <option value="medium">中</option>
+            <option value="high">高</option>
+          </select>
+          <p class="hint">翻译追求速度，建议「关闭」或「低」。个别模型不支持某档位时，用下方高级参数覆盖，并用「测试连接」确认。</p>
+        </div>
+        <div class="field">
+          <label for="f_extra">高级参数（JSON，合并进请求体；值为 null 表示删除该字段）</label>
+          <textarea id="f_extra" rows="4" spellcheck="false" placeholder='{"temperature":0}'></textarea>
+        </div>
+        <div class="actions">
+          <button type="submit" id="saveBtn" class="primary">保存</button>
+          <button type="button" id="testBtn">测试连接</button>
+          <button type="button" id="deleteBtn" class="danger">删除</button>
+        </div>
+        <p id="status" class="status"></p>
+      </form>
+    </div>
+  </div>
+  <script src="options.js"></script>
+</body>
+</html>
