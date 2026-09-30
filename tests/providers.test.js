@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadProviders, plain } = require('./helpers/load');
+const { sseText, streamResponse } = require('./helpers/sse');
 
 const P = loadProviders();
 const base = { id: 'x', name: 'X', apiKey: 'KEY', model: 'mdl', thinking: 'default', extraParams: '' };
@@ -89,4 +90,38 @@ test('高级参数深度合并保留兄弟键', () => {
   }).body;
   // 深度合并应保留原有的 effort，并加入新的 foo
   assert.deepEqual(b.output_config, { effort: 'high', foo: 1 });
+});
+
+test('readStream：两种协议按任意字节切块都能拼对，回调为累积文本', async () => {
+  const text = '{"source_lang":"en","translated_text":"你好😀\\n世界"}';
+  for (const protocol of ['openai', 'anthropic']) {
+    for (const chunk of [1, 2, 7, 64, 100000]) {
+      const seen = [];
+      const out = await P.readStream(streamResponse(sseText(protocol, text), chunk), protocol, (acc) => seen.push(acc));
+      assert.equal(out, text, `${protocol}/${chunk}`);
+      assert.ok(seen.length >= 1);
+      assert.ok(seen.every(s => text.startsWith(s)), `${protocol}/${chunk} 回调非前缀`);
+    }
+  }
+});
+
+test('readStream：anthropic 丢弃思考增量', async () => {
+  const seen = [];
+  const out = await P.readStream(streamResponse(sseText('anthropic', 'ABC'), 5), 'anthropic', (acc) => seen.push(acc));
+  assert.equal(out, 'ABC');
+  assert.ok(seen.every(s => !s.includes('SECRET')));
+});
+
+test('readStream：anthropic error 事件抛出错误信息', async () => {
+  const s = 'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n\n';
+  await assert.rejects(P.readStream(streamResponse(s), 'anthropic', () => {}), /Overloaded/);
+});
+
+test('extractText：非流式响应', () => {
+  assert.equal(P.extractText({ choices: [{ message: { content: 'A' } }] }, 'openai'), 'A');
+  assert.equal(P.extractText({
+    content: [{ type: 'thinking', thinking: '' }, { type: 'text', text: 'B' }, { type: 'text', text: 'C' }]
+  }, 'anthropic'), 'BC');
+  assert.equal(P.extractText({}, 'openai'), '');
+  assert.equal(P.extractText({}, 'anthropic'), '');
 });

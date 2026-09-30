@@ -75,3 +75,50 @@ function buildRequest(model, { system, user, stream, maxTokens }) {
   deepMerge(body, parseExtraParams(model.extraParams));
   return { url, headers, body };
 }
+
+// 单个 SSE 事件 → 文本增量；anthropic 的 error 事件直接抛出
+function streamDeltaText(evt, protocol) {
+  if (protocol === 'anthropic') {
+    if (evt.type === 'error') throw new Error((evt.error && evt.error.message) || 'Anthropic 流式响应错误');
+    // 只取正文增量，thinking_delta 等事件丢弃
+    return evt.type === 'content_block_delta' && evt.delta && evt.delta.type === 'text_delta' ? evt.delta.text : '';
+  }
+  return evt.choices?.[0]?.delta?.content || '';
+}
+
+// 读取 SSE 流，返回拼接后的完整文本；每批新内容到达时以累积文本回调
+async function readStream(response, protocol, onChunk) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let content = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    let changed = false;
+    for (const line of lines) {
+      const s = line.trim();
+      // 跳过空行、event: 行与 ": keep-alive" 注释行
+      if (!s.startsWith('data:')) continue;
+      const payload = s.slice(5).trim();
+      if (payload === '[DONE]') continue;
+      let evt;
+      try { evt = JSON.parse(payload); } catch (_) { continue; }
+      const delta = streamDeltaText(evt, protocol);
+      if (delta) { content += delta; changed = true; }
+    }
+    if (changed && onChunk) onChunk(content);
+  }
+  return content;
+}
+
+// 非流式响应 → 文本
+function extractText(json, protocol) {
+  if (protocol === 'anthropic') {
+    return (json.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+  }
+  return json.choices?.[0]?.message?.content || '';
+}
