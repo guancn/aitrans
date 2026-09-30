@@ -232,71 +232,92 @@ function createAndShowPopup(text, x, y, replaceIcon = null, sourceStyleInfo = nu
   // SW 无响应兜底：background 在 TRANSLATE_DEADLINE_MS(25s) 内必回包，此值必须更大
   const TRANSLATE_TIMEOUT_MS = 30000;
   const timeoutId = setTimeout(() => {
+    finished = true;
+    try { port.disconnect(); } catch (_) { /* 已断开 */ }
     // 必须校验 requestId：旧请求的定时器不能覆盖用户新发起的翻译弹窗
     if (requestId === activeRequestId && popupContainer) {
       popupContainer.innerHTML = `<div class="translate-ext-error">翻译超时，请重试</div>`;
     }
   }, TRANSLATE_TIMEOUT_MS);
 
+  // 渲染译文：首次搭建弹窗结构，流式增量到达时只更新文本，避免重建 DOM 闪烁
+  const renderResult = (data) => {
+    let resultEl = popupContainer.querySelector('.translate-ext-result');
+    if (!resultEl) {
+      popupContainer.innerHTML = `
+        <div class="translate-ext-header">
+           <span class="translate-ext-lang"></span>
+           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+           <span class="translate-ext-logo">${data.service === 'google' ? 'Google 翻译' : 'DeepSeek AI'}</span>
+           <div class="translate-ext-close">
+             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+           </div>
+        </div>
+        <div class="translate-ext-result"></div>
+      `;
+      popupContainer.querySelector('.translate-ext-close').addEventListener('click', cleanup);
+      resultEl = popupContainer.querySelector('.translate-ext-result');
+      if (sourceStyleInfo) {
+        resultEl.style.fontSize = `${sourceStyleInfo.fontSize}px`;
+        resultEl.style.fontWeight = sourceStyleInfo.fontWeight;
+        resultEl.style.fontStyle = sourceStyleInfo.fontStyle;
+      }
+    }
+    popupContainer.querySelector('.translate-ext-lang').textContent = (data.sourceLang || '…').toUpperCase();
+    resultEl.textContent = data.translatedText;
+  };
+
+  let port;
   try {
-    chrome.runtime.sendMessage({ action: 'translate', text: text }, (response) => {
-      clearTimeout(timeoutId);
-
-      if (requestId !== activeRequestId) return;
-
-      if (chrome.runtime.lastError) {
-        if (chrome.runtime.lastError.message && chrome.runtime.lastError.message.includes('Extension context invalidated')) {
-           markInvalidated();
-        }
-        // 非上下文失效错误（如 "Could not establish connection"）也需提示用户
-        else if (popupContainer) {
-          popupContainer.innerHTML = `<div class="translate-ext-error">连接失败，请刷新页面后重试</div>`;
-        }
-        return;
-      }
-
-      // If container was closed by user
-      if (!popupContainer) return; 
-      
-      if (response && response.success) {
-        popupContainer.innerHTML = `
-          <div class="translate-ext-header">
-             <span class="translate-ext-lang">${escapeHtml(response.sourceLang).toUpperCase()}</span>
-             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-             <span class="translate-ext-logo">${response.service === 'google' ? 'Google 翻译' : 'DeepSeek AI'}</span>
-             <div class="translate-ext-close">
-               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-             </div>
-          </div>
-          <div class="translate-ext-result">${escapeHtml(response.translatedText)}</div>
-        `;
-        
-        // Bind close button
-        const closeBtn = popupContainer.querySelector('.translate-ext-close');
-        if (closeBtn) {
-          closeBtn.addEventListener('click', cleanup);
-        }
-
-        if (sourceStyleInfo) {
-          const resultEl = popupContainer.querySelector('.translate-ext-result');
-          if (resultEl) {
-            resultEl.style.fontSize = `${sourceStyleInfo.fontSize}px`;
-            resultEl.style.fontWeight = sourceStyleInfo.fontWeight;
-            resultEl.style.fontStyle = sourceStyleInfo.fontStyle;
-          }
-        }
-      } else {
-        popupContainer.innerHTML = `
-          <div class="translate-ext-error">${escapeHtml(response ? response.error : '未知错误')}</div>
-        `;
-      }
-    });
+    port = chrome.runtime.connect({ name: 'translate' });
   } catch (e) {
     clearTimeout(timeoutId);
     if (e.message && e.message.includes('Extension context invalidated')) {
       markInvalidated();
     }
+    return;
   }
+
+  let finished = false;
+  port.onMessage.addListener((msg) => {
+    // 用户已关闭弹窗或发起了新翻译：断开连接，后台停止推送
+    if (requestId !== activeRequestId || !popupContainer) {
+      finished = true;
+      clearTimeout(timeoutId);
+      port.disconnect();
+      return;
+    }
+
+    if (msg.type === 'delta') {
+      renderResult(msg);
+      return;
+    }
+
+    finished = true;
+    clearTimeout(timeoutId);
+    port.disconnect();
+    const response = msg.result;
+    if (response && response.success) {
+      renderResult(response);
+    } else {
+      popupContainer.innerHTML = `
+        <div class="translate-ext-error">${escapeHtml(response ? response.error : '未知错误')}</div>
+      `;
+    }
+  });
+
+  // 后台未发 done 就断开（SW 崩溃、扩展重载）
+  port.onDisconnect.addListener(() => {
+    void chrome.runtime.lastError;
+    if (finished) return;
+    clearTimeout(timeoutId);
+    if (!isExtensionAlive()) return;
+    if (requestId === activeRequestId && popupContainer) {
+      popupContainer.innerHTML = `<div class="translate-ext-error">连接失败，请刷新页面后重试</div>`;
+    }
+  });
+
+  port.postMessage({ text });
 }
 
 function escapeHtml(unsafe) {

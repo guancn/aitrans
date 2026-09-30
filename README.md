@@ -6,7 +6,7 @@
 
 高颜值、不打扰的 Chrome 划词翻译扩展。纯原生 JS/HTML/CSS，零依赖，即装即用。
 
-支持 **划词翻译**（图标悬停/直接弹窗）和 **全页翻译** 两种模式，DeepSeek V4 Flash AI 翻译 + Google 免费双引擎。全页翻译自动遍历页面文字并批量翻译，进度条实时反馈。
+支持 **划词翻译**（图标悬停/直接弹窗）和 **全页翻译** 两种模式，DeepSeek Flash AI 翻译 + Google 免费双引擎。全页翻译自动遍历页面文字并批量翻译，进度条实时反馈。
 
 <p align="center">
   <img src="icons/icon128.png" width="128" alt="aitrans icon">
@@ -16,7 +16,7 @@
 
 - 🎯 **划词即译** — 选中文本自动弹出翻译，无需额外操作
 - 📄 **全页翻译** — 一键翻译整个网页，TreeWalker + 并发批量调度
-- 🤖 **双引擎** — DeepSeek V4 Flash（AI 意译）+ Google 翻译（免费），两种模式独立配置
+- 🤖 **双引擎** — DeepSeek Flash（AI 意译）+ Google 翻译（免费），两种模式独立配置
 - 🌙 **暗色模式** — 自动适配系统 `prefers-color-scheme`
 - ⚡ **极致轻量** — 完整扩展仅 ~60KB，每页注入约 20KB
 - 🔒 **零隐私泄漏** — 翻译请求直连 API，无中间服务器
@@ -72,9 +72,9 @@
 划词翻译模式：
   用户划选文本
     → content.js 捕获 mouseup，根据 triggerMode 显示图标或弹窗
-    → chrome.runtime.sendMessage() 发给 background.js
+    → chrome.runtime.connect() 长连接发给 background.js
     → background.js 根据 translationService 路由 DeepSeek / Google
-    → 回传译文，content.js 渲染弹窗
+    → DeepSeek 流式回传，译文边生成边显示；Google 一次性回传
 
 全页翻译模式：
   用户点击「翻译当前网页」

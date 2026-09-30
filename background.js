@@ -93,7 +93,60 @@ function cacheSet(key, value) {
   }
 }
 
-async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries = 2) {
+// 从（可能未接收完的）JSON 文本中增量提取字符串字段；字段未闭合时返回已到达的部分
+function extractJsonStringField(buf, field) {
+  const m = new RegExp(`"${field}"\\s*:\\s*"`).exec(buf);
+  if (!m) return null;
+  let out = '';
+  for (let i = m.index + m[0].length; i < buf.length; i++) {
+    const ch = buf[i];
+    if (ch === '"') return { value: out, complete: true };
+    if (ch !== '\\') { out += ch; continue; }
+    // 转义序列被分块截断时停在此处，等下一块到达
+    if (i + 1 >= buf.length) break;
+    const esc = buf[++i];
+    if (esc === 'u') {
+      if (i + 4 >= buf.length) break;
+      out += String.fromCharCode(parseInt(buf.slice(i + 1, i + 5), 16));
+      i += 4;
+    } else {
+      out += { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f' }[esc] ?? esc;
+    }
+  }
+  return { value: out, complete: false };
+}
+
+// 读取 OpenAI 兼容 SSE 流，返回拼接后的完整 content；每批新内容到达时以累积文本回调
+async function readChatStream(response, onChunk) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let content = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    let changed = false;
+    for (const line of lines) {
+      const s = line.trim();
+      // 跳过空行与 ": keep-alive" 注释行
+      if (!s.startsWith('data:')) continue;
+      const payload = s.slice(5).trim();
+      if (payload === '[DONE]') continue;
+      try {
+        const delta = JSON.parse(payload).choices?.[0]?.delta?.content;
+        if (delta) { content += delta; changed = true; }
+      } catch (_) { /* 忽略无法解析的行 */ }
+    }
+    if (changed) onChunk(content);
+  }
+  return content;
+}
+
+// onDelta 传入时走流式：每收到新内容回调 (已到达的译文, 已识别的源语言)
+async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries = 2, onDelta = null) {
   const targetLangName = LANG_NAMES[targetLang] || targetLang;
   // 全局替换：默认提示词中 {{targetLang}} 出现多次，单次 replace 会漏掉后面的
   const finalPrompt = systemPrompt.replace(/\{\{targetLang\}\}/g, targetLangName);
@@ -116,20 +169,20 @@ async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries 
           'Authorization': `Bearer ${apiKey}`
         },
         body: JSON.stringify({
-          model: 'deepseek-v4-flash',
+          model: 'deepseek-flash',
           messages: [
             { role: 'system', content: finalPrompt },
             { role: 'user', content: text }
           ],
           temperature: 0,
           max_tokens: 2048,
-          thinking: { type: 'disabled' }
+          thinking: { type: 'disabled' },
+          stream: !!onDelta
         })
       });
 
-      clearTimeout(timeoutId);
-
       if (!response.ok) {
+        clearTimeout(timeoutId);
         if (response.status === 401 || response.status === 403) {
           let msg = 'API Key 无效，请检查设置';
           if (response.status === 403) msg = 'API Key 无权限或余额不足';
@@ -146,8 +199,21 @@ async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries 
         throw new Error(`HTTP ${response.status}: ${errText}`);
       }
 
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content || '';
+      // 读取响应体也在超时计时内（流式时 body 持续数秒）
+      let content;
+      if (onDelta) {
+        content = await readChatStream(response, (acc) => {
+          const t = extractJsonStringField(acc, 'translated_text');
+          if (t && t.value) {
+            const lang = extractJsonStringField(acc, 'source_lang');
+            onDelta(t.value, lang && lang.complete ? lang.value : '');
+          }
+        });
+      } else {
+        const data = await response.json();
+        content = data.choices?.[0]?.message?.content || '';
+      }
+      clearTimeout(timeoutId);
 
       // 两层 JSON 提取：先正则清理，再大括号定位
       let parsed = null;
@@ -310,7 +376,7 @@ async function translateBatchDeepSeek(texts, targetLang, apiKey, maxRetries = 2)
           'Authorization': `Bearer ${apiKey}`
         },
         body: JSON.stringify({
-          model: 'deepseek-v4-flash',
+          model: 'deepseek-flash',
           messages: [
             { role: 'system', content: finalPrompt },
             { role: 'user', content: JSON.stringify(texts) }
@@ -403,37 +469,50 @@ async function translateBatch(texts, targetLang, apiKey, systemPrompt, service, 
   return results;
 }
 
-chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
-  if (request.action === 'translate') {
+// 划词翻译走长连接（port）：DeepSeek 流式推送 {type:'delta'}，结束推送 {type:'done', result}；
+// Google 与缓存命中只推送 done
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'translate') return;
+  let disconnected = false;
+  port.onDisconnect.addListener(() => { disconnected = true; });
+  // 用户关闭弹窗后 content 端会断开，向已断开的 port 发消息会抛错
+  const post = (msg) => {
+    if (disconnected) return;
+    try { port.postMessage(msg); } catch (_) { disconnected = true; }
+  };
+
+  port.onMessage.addListener(({ text }) => {
     (async () => {
       // 冷启动竞态防护：等配置加载完成再路由，否则可能用错引擎/语言
       await configReady;
 
       const service = userConfig.translationService || 'deepseek';
-      const cacheKey = `${service}|${userConfig.targetLang}|${request.text}`;
+      const cacheKey = `${service}|${userConfig.targetLang}|${text}`;
       const cached = cacheGet(cacheKey);
       if (cached) {
-        sendResponse(cached);
+        post({ type: 'done', result: cached });
         return;
       }
 
       let result;
       if (service === 'google') {
-        result = await translateWithGoogle(request.text, userConfig.targetLang);
+        result = await translateWithGoogle(text, userConfig.targetLang);
       } else {
         if (!userConfig.apiKey) {
-          sendResponse({ success: false, error: '请先在扩展设置中填写 DeepSeek API Key' });
+          post({ type: 'done', result: { success: false, error: '请先在扩展设置中填写 DeepSeek API Key' } });
           return;
         }
-        result = await translateText(request.text, userConfig.targetLang, userConfig.apiKey, userConfig.systemPrompt);
+        result = await translateText(text, userConfig.targetLang, userConfig.apiKey, userConfig.systemPrompt, 2,
+          (partial, sourceLang) => post({ type: 'delta', translatedText: partial, sourceLang, service: 'deepseek' }));
       }
 
       if (result && result.success) cacheSet(cacheKey, result);
-      sendResponse(result);
-    })().catch(() => {});
-    return true;
-  }
+      post({ type: 'done', result });
+    })().catch(() => post({ type: 'done', result: { success: false, error: '翻译请求失败' } }));
+  });
+});
 
+chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   if (request.action === 'translateBatch') {
     (async () => {
       await configReady;
