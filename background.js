@@ -1,5 +1,8 @@
 // background.js
 
+// 协议适配层（buildRequest / readStream / extractText）
+importScripts('providers.js');
+
 // 默认系统提示词 — 融合宝玉翻译理念：意译优先、表达地道、保留专名
 // ⚠️ 修改此处时请同步更新 popup.js 中的 DEFAULT_PROMPT
 const DEFAULT_SYSTEM_PROMPT =
@@ -11,8 +14,22 @@ const DEFAULT_SYSTEM_PROMPT =
   'Be concise — match the source length and tone. ' +
   'Output ONLY JSON (no markdown fences): {"source_lang":"<detected>","translated_text":"<translation>"}';
 
+// 内置 DeepSeek 预设：旧配置迁移与新装用户的初始模型
+// temperature:0 + 关闭思考 = v1.3.0 及以前的翻译行为
+const DEEPSEEK_PRESET = {
+  name: 'DeepSeek Flash', protocol: 'openai', baseUrl: 'https://api.deepseek.com',
+  model: 'deepseek-flash', thinking: 'off', extraParams: '{"temperature":0}'
+};
+
+// 配置默认值；onChanged 中键被 remove 时回退到这里
+const CONFIG_DEFAULTS = {
+  targetLang: 'zh-CN', translationService: 'deepseek', systemPrompt: DEFAULT_SYSTEM_PROMPT,
+  activeMode: 'selection', fp_targetLang: 'zh-CN', fp_translationService: 'google',
+  fp_systemPrompt: DEFAULT_SYSTEM_PROMPT, models: []
+};
+
 // 缓存用户配置，避免每次翻译时查询 storage 产生延迟
-let userConfig = { targetLang: 'zh-CN', translationService: 'deepseek', apiKey: '', systemPrompt: DEFAULT_SYSTEM_PROMPT, activeMode: 'selection', fp_targetLang: 'zh-CN', fp_translationService: 'google', fp_apiKey: '', fp_systemPrompt: DEFAULT_SYSTEM_PROMPT };
+let userConfig = { ...CONFIG_DEFAULTS };
 
 const LANG_NAMES = {
   'zh-CN': 'Simplified Chinese',
@@ -25,40 +42,58 @@ const LANG_NAMES = {
   'ru': 'Russian'
 };
 
+// 旧版单引擎配置（apiKey / fp_apiKey）→ 模型列表；仅在 models 键不存在时调用
+function migrateLegacyConfig(items) {
+  const key = items.apiKey || '';
+  const fpKey = items.fp_apiKey || '';
+  const models = [{ id: 'deepseek', ...DEEPSEEK_PRESET, apiKey: key || fpKey }];
+  // 两种模式曾配置不同的 Key：拆成两个条目，各自沿用原 Key
+  const splitFp = !!(key && fpKey && key !== fpKey);
+  if (splitFp) {
+    models.push({ id: 'deepseek_fp', ...DEEPSEEK_PRESET, name: 'DeepSeek Flash（全页）', apiKey: fpKey });
+  }
+  const fpService = items.fp_translationService || 'google';
+  return {
+    set: {
+      models,
+      translationService: items.translationService || 'deepseek',
+      fp_translationService: splitFp && fpService === 'deepseek' ? 'deepseek_fp' : fpService
+    },
+    remove: ['apiKey', 'fp_apiKey']
+  };
+}
+
 // 配置加载 promise 化：SW 冷启动时消息可能先于 storage 回调到达，
 // 消息处理前必须 await configReady，否则会用硬编码默认值路由（引擎/语言错乱）
 let configReady = Promise.resolve();
 
 try {
   configReady = new Promise((resolve) => {
-    chrome.storage.sync.get(['targetLang', 'translationService', 'apiKey', 'systemPrompt', 'activeMode', 'fp_targetLang', 'fp_translationService', 'fp_apiKey', 'fp_systemPrompt'], (items) => {
-      if (!chrome.runtime.lastError && items) {
-        if (items.targetLang) userConfig.targetLang = items.targetLang;
-        if (items.translationService) userConfig.translationService = items.translationService;
-        if (items.apiKey) userConfig.apiKey = items.apiKey;
-        if (items.systemPrompt) userConfig.systemPrompt = items.systemPrompt;
-        if (items.activeMode) userConfig.activeMode = items.activeMode;
-        if (items.fp_targetLang) userConfig.fp_targetLang = items.fp_targetLang;
-        if (items.fp_translationService) userConfig.fp_translationService = items.fp_translationService;
-        if (items.fp_apiKey) userConfig.fp_apiKey = items.fp_apiKey;
-        if (items.fp_systemPrompt) userConfig.fp_systemPrompt = items.fp_systemPrompt;
-      }
-      resolve();
+    chrome.storage.sync.get(null, (items) => {
+      if (chrome.runtime.lastError || !items) { resolve(); return; }
+      const apply = () => {
+        for (const k of Object.keys(CONFIG_DEFAULTS)) {
+          if (items[k]) userConfig[k] = items[k];
+        }
+        resolve();
+      };
+      if (Array.isArray(items.models)) { apply(); return; }
+
+      const { set, remove } = migrateLegacyConfig(items);
+      Object.assign(items, set);
+      // 写入完成后才 resolve：ensureConfig 的调用方（popup / 选项页）随后直接读 storage
+      chrome.storage.sync.set(set, () => {
+        if (!chrome.runtime.lastError) chrome.storage.sync.remove(remove);
+        apply();
+      });
     });
   });
 
   // 键被 remove 时 newValue 为 undefined，用 ?? 回退默认值防止配置被污染
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'sync') {
-      if (changes.targetLang) userConfig.targetLang = changes.targetLang.newValue ?? 'zh-CN';
-      if (changes.translationService) userConfig.translationService = changes.translationService.newValue ?? 'deepseek';
-      if (changes.apiKey) userConfig.apiKey = changes.apiKey.newValue ?? '';
-      if (changes.systemPrompt) userConfig.systemPrompt = changes.systemPrompt.newValue ?? DEFAULT_SYSTEM_PROMPT;
-      if (changes.activeMode) userConfig.activeMode = changes.activeMode.newValue ?? 'selection';
-      if (changes.fp_targetLang) userConfig.fp_targetLang = changes.fp_targetLang.newValue ?? 'zh-CN';
-      if (changes.fp_translationService) userConfig.fp_translationService = changes.fp_translationService.newValue ?? 'google';
-      if (changes.fp_apiKey) userConfig.fp_apiKey = changes.fp_apiKey.newValue ?? '';
-      if (changes.fp_systemPrompt) userConfig.fp_systemPrompt = changes.fp_systemPrompt.newValue ?? DEFAULT_SYSTEM_PROMPT;
+    if (area !== 'sync') return;
+    for (const [k, c] of Object.entries(changes)) {
+      if (k in CONFIG_DEFAULTS) userConfig[k] = c.newValue ?? CONFIG_DEFAULTS[k];
     }
   });
 } catch (e) {
@@ -513,6 +548,11 @@ chrome.runtime.onConnect.addListener((port) => {
 });
 
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+  // popup / 选项页打开时调用：唤醒 SW 并等待旧配置迁移完成
+  if (request.action === 'ensureConfig') {
+    configReady.then(() => sendResponse({ ok: true }));
+    return true;
+  }
   if (request.action === 'translateBatch') {
     (async () => {
       await configReady;
