@@ -121,7 +121,7 @@ aitrans/
 | Chrome ≥ 88 | ✅ |
 | Edge ≥ 88 | ✅ |
 | 其他 Chromium | ✅ |
-| Safari | 可转换（见 `.claude/settings.local.json`） |
+| Safari | 可转换（`xcrun safari-web-extension-converter`） |
 | Firefox | 待适配（Manifest V2 polyfill） |
 
 ## License
