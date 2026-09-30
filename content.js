@@ -407,9 +407,21 @@ async function startPageTranslation() {
     }
     if (items.length === 0) { hideProgress(); return; }
 
-    // 去重：整页大量重复文本（导航、页脚、重复标签）只翻一次
-    const uniqueTexts = [...new Set(items.map(it => it.core))];
-    const translations = new Map();
+    // 视口优先：按离当前视口的距离排序（稳定排序，同距离保持文档顺序），眼前内容最先变成译文
+    const viewH = window.innerHeight;
+    for (const it of items) {
+      const r = it.node.parentElement.getBoundingClientRect();
+      it.dist = r.bottom < 0 ? -r.bottom : (r.top > viewH ? r.top - viewH : 0);
+    }
+    items.sort((a, b) => a.dist - b.dist);
+
+    // 去重：整页大量重复文本（导航、页脚、重复标签）只翻一次，译文回填到所有同文节点
+    const itemsByText = new Map();
+    for (const it of items) {
+      if (!itemsByText.has(it.core)) itemsByText.set(it.core, []);
+      itemsByText.get(it.core).push(it);
+    }
+    const uniqueTexts = [...itemsByText.keys()];
 
     // 按字符预算切批：固定条数遇长段落易超 max_tokens=4096 → 输出 JSON 截断 →
     // 长度对不上 → 整批回退逐条（N 个请求 + N 份 system prompt），token 反而爆炸。
@@ -436,44 +448,34 @@ async function startPageTranslation() {
 
     showProgress('正在翻译...', 0);
 
-    // 并发批量调度：每次最多 MAX_CONCURRENT 批并行
-    for (let i = 0; i < batches.length; i += MAX_CONCURRENT) {
-      const chunk = batches.slice(i, i + MAX_CONCURRENT);
-      const results = await Promise.all(chunk.map(batchTexts =>
-        new Promise((resolve) => {
+    // 滑动工作池：任一批返回即立刻回填并取下一批，不等同轮最慢的批次
+    let next = 0;
+    const worker = async () => {
+      while (next < total) {
+        const batchTexts = batches[next++];
+        const result = await new Promise((resolve) => {
           chrome.runtime.sendMessage(
             { action: 'translateBatch', texts: batchTexts },
-            (response) => {
-              resolve(chrome.runtime.lastError ? null : response);
-            }
+            (response) => resolve(chrome.runtime.lastError ? null : response)
           );
-        })
-      ));
+        });
 
-      // 收集译文到 map（按唯一文本对齐）
-      for (let j = 0; j < chunk.length; j++) {
-        const batchTexts = chunk[j];
-        const result = results[j];
-        if (result && Array.isArray(result)) {
-          for (let k = 0; k < result.length; k++) {
-            const r = result[k];
-            if (r && r.success && r.translatedText) {
-              translations.set(batchTexts[k], r.translatedText);
+        // 逐批回填：保留原节点前后空白
+        if (Array.isArray(result)) {
+          result.forEach((r, k) => {
+            if (!r || !r.success || !r.translatedText) return;
+            for (const it of itemsByText.get(batchTexts[k])) {
+              it.node.nodeValue = it.lead + r.translatedText + it.trail;
             }
-          }
+          });
         }
+
         completed++;
+        const pct = Math.round((completed / total) * 100);
+        showProgress(`正在翻译... ${pct}%`, pct);
       }
-
-      const pct = Math.round((completed / total) * 100);
-      showProgress(`正在翻译... ${pct}%`, pct);
-    }
-
-    // 回填：保留原节点前后空白
-    for (const it of items) {
-      const t = translations.get(it.core);
-      if (t) it.node.nodeValue = it.lead + t + it.trail;
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENT, total) }, worker));
 
     showProgress('翻译完成', 100);
     setTimeout(hideProgress, 2000);
