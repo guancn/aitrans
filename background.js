@@ -100,6 +100,23 @@ try {
   // Service Worker 上下文失效时静默处理
 }
 
+// 请求异常 → 用户可读文案
+function requestErrorMessage(error) {
+  if (error && error.name === 'AbortError') return '请求超时，请重试';
+  // fetch 在无主机权限、CORS 拒绝或断网时抛 TypeError
+  if (error && error.name === 'TypeError') return '无法访问该地址：请在模型管理中保存以授权，或检查网络';
+  return (error && error.message) || '翻译请求失败，请检查网络连接';
+}
+
+// 服务 id → 路由目标：'google' 或模型列表中的条目
+function resolveModel(serviceId) {
+  if (serviceId === 'google') return { google: true };
+  const model = userConfig.models.find(m => m.id === serviceId);
+  if (!model) return { error: '模型已删除，请重新选择' };
+  if (!model.apiKey) return { error: '请先在模型管理中填写 API Key' };
+  return { model };
+}
+
 // 单次请求超时；DeepSeek 含重试的总时长受 TRANSLATE_DEADLINE_MS 约束
 // ⚠️ content.js 的 TRANSLATE_TIMEOUT_MS 是 SW 无响应兜底，必须大于 TRANSLATE_DEADLINE_MS
 const REQUEST_TIMEOUT_MS = 20000;
@@ -151,42 +168,11 @@ function extractJsonStringField(buf, field) {
   return { value: out, complete: false };
 }
 
-// 读取 OpenAI 兼容 SSE 流，返回拼接后的完整 content；每批新内容到达时以累积文本回调
-async function readChatStream(response, onChunk) {
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let content = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop();
-    let changed = false;
-    for (const line of lines) {
-      const s = line.trim();
-      // 跳过空行与 ": keep-alive" 注释行
-      if (!s.startsWith('data:')) continue;
-      const payload = s.slice(5).trim();
-      if (payload === '[DONE]') continue;
-      try {
-        const delta = JSON.parse(payload).choices?.[0]?.delta?.content;
-        if (delta) { content += delta; changed = true; }
-      } catch (_) { /* 忽略无法解析的行 */ }
-    }
-    if (changed) onChunk(content);
-  }
-  return content;
-}
-
-// onDelta 传入时走流式：每收到新内容回调 (已到达的译文, 已识别的源语言)
-async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries = 2, onDelta = null) {
+// 模型翻译（协议差异由 providers.js 适配）；onDelta 传入时走流式：每收到新内容回调 (已到达的译文, 已识别的源语言)
+async function translateWithModel(model, text, targetLang, systemPrompt, maxRetries = 2, onDelta = null) {
   const targetLangName = LANG_NAMES[targetLang] || targetLang;
   // 全局替换：默认提示词中 {{targetLang}} 出现多次，单次 replace 会漏掉后面的
   const finalPrompt = systemPrompt.replace(/\{\{targetLang\}\}/g, targetLangName);
-
-  const url = 'https://api.deepseek.com/v1/chat/completions';
 
   // maxRetries 不含首次尝试，总计最多 (maxRetries + 1) 次请求，且整体不超过截止时间
   const deadline = Date.now() + TRANSLATE_DEADLINE_MS;
@@ -196,32 +182,13 @@ async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), Math.min(REQUEST_TIMEOUT_MS, remaining));
     try {
-      const response = await fetch(url, {
-        signal: controller.signal,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: 'deepseek-flash',
-          messages: [
-            { role: 'system', content: finalPrompt },
-            { role: 'user', content: text }
-          ],
-          temperature: 0,
-          max_tokens: 2048,
-          thinking: { type: 'disabled' },
-          stream: !!onDelta
-        })
-      });
+      const { url, headers, body } = buildRequest(model, { system: finalPrompt, user: text, stream: !!onDelta, maxTokens: 2048 });
+      const response = await fetch(url, { signal: controller.signal, method: 'POST', headers, body: JSON.stringify(body) });
 
       if (!response.ok) {
         clearTimeout(timeoutId);
         if (response.status === 401 || response.status === 403) {
-          let msg = 'API Key 无效，请检查设置';
-          if (response.status === 403) msg = 'API Key 无权限或余额不足';
-          return { success: false, error: msg };
+          return { success: false, error: response.status === 403 ? 'API Key 无权限或余额不足' : 'API Key 无效，请检查设置' };
         }
         if (response.status === 429) {
           if (attempt < maxRetries) {
@@ -231,13 +198,16 @@ async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries 
           return { success: false, error: '请求过于频繁，请稍后再试' };
         }
         const errText = await response.text().catch(() => '');
-        throw new Error(`HTTP ${response.status}: ${errText}`);
+        const httpError = `HTTP ${response.status}: ${errText.slice(0, 200)}`;
+        // 其余 4xx 多为参数 / 模型名错误，重试无意义
+        if (response.status < 500) return { success: false, error: httpError };
+        throw new Error(httpError);
       }
 
       // 读取响应体也在超时计时内（流式时 body 持续数秒）
       let content;
       if (onDelta) {
-        content = await readChatStream(response, (acc) => {
+        content = await readStream(response, model.protocol, (acc) => {
           const t = extractJsonStringField(acc, 'translated_text');
           if (t && t.value) {
             const lang = extractJsonStringField(acc, 'source_lang');
@@ -245,14 +215,15 @@ async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries 
           }
         });
       } else {
-        const data = await response.json();
-        content = data.choices?.[0]?.message?.content || '';
+        content = extractText(await response.json(), model.protocol);
       }
       clearTimeout(timeoutId);
 
+      if (!content) return { success: false, error: '模型未返回内容，请检查模型名或高级参数' };
+
       // 两层 JSON 提取：先正则清理，再大括号定位
       let parsed = null;
-      let extracted = content
+      const extracted = content
         .replace(/```(?:json)?\s*/gi, '')  // 移除所有开启围栏 (```json, ```)
         .replace(/```/g, '')               // 移除残留闭合围栏
         .trim();
@@ -276,26 +247,16 @@ async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries 
           originalText: text,
           translatedText: parsed.translated_text,
           sourceLang: parsed.source_lang || 'auto',
-          service: 'deepseek'
+          service: 'model',
+          modelName: model.name
         };
       }
 
       // 全部解析失败则返回错误，决不把原始 JSON 当译文展示
-      return {
-        success: false,
-        error: '翻译结果解析失败，请重试'
-      };
-
+      return { success: false, error: '翻译结果解析失败，请重试' };
     } catch (error) {
       clearTimeout(timeoutId);
-      if (attempt === maxRetries) {
-        return {
-          success: false,
-          error: (error && error.name === 'AbortError')
-            ? '请求超时，请重试'
-            : (error.message || '翻译请求失败，请检查网络连接')
-        };
-      }
+      if (attempt === maxRetries) return { success: false, error: requestErrorMessage(error) };
       await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
     }
   }
@@ -393,38 +354,20 @@ function parseJsonArray(content) {
   return null;
 }
 
-// DeepSeek 数组批量：一次请求翻译整批，成功返回 string[]，失败返回 null（由上层逐条回退）
-async function translateBatchDeepSeek(texts, targetLang, apiKey, maxRetries = 2) {
+// 模型数组批量：一次请求翻译整批，成功返回 string[]，失败返回 null（由上层逐条回退）
+async function translateBatchWithModel(model, texts, targetLang, maxRetries = 2) {
   const targetLangName = LANG_NAMES[targetLang] || targetLang;
   const finalPrompt = BATCH_SYSTEM_PROMPT.replace(/\{\{targetLang\}\}/g, targetLangName);
-  const url = 'https://api.deepseek.com/v1/chat/completions';
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 30000);
     try {
-      const response = await fetch(url, {
-        signal: controller.signal,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: 'deepseek-flash',
-          messages: [
-            { role: 'system', content: finalPrompt },
-            { role: 'user', content: JSON.stringify(texts) }
-          ],
-          temperature: 0,
-          max_tokens: 4096,
-          thinking: { type: 'disabled' }
-        })
-      });
-
-      clearTimeout(timeoutId);
+      const { url, headers, body } = buildRequest(model, { system: finalPrompt, user: JSON.stringify(texts), stream: false, maxTokens: 4096 });
+      const response = await fetch(url, { signal: controller.signal, method: 'POST', headers, body: JSON.stringify(body) });
 
       if (!response.ok) {
+        clearTimeout(timeoutId);
         // 401/403 返回哨兵短路：回退逐条只会再打 N 个注定失败的请求，纯浪费
         if (response.status === 401 || response.status === 403) {
           return {
@@ -440,8 +383,8 @@ async function translateBatchDeepSeek(texts, targetLang, apiKey, maxRetries = 2)
         return null;
       }
 
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content || '';
+      const content = extractText(await response.json(), model.protocol);
+      clearTimeout(timeoutId);
       const arr = parseJsonArray(content);
       // 数量必须与输入严格一致，否则无法对齐 → 回退逐条保证正确性
       if (arr && arr.length === texts.length) return arr;
@@ -455,13 +398,12 @@ async function translateBatchDeepSeek(texts, targetLang, apiKey, maxRetries = 2)
   return null;
 }
 
-// 批量翻译：DeepSeek 优先走单请求数组批量，失败/Google 回退并发工作池
-async function translateBatch(texts, targetLang, apiKey, systemPrompt, service, maxConcurrency) {
+// 批量翻译：model 为 null 表示 Google；模型优先走单请求数组批量，失败回退并发工作池
+async function translateBatch(texts, targetLang, model, systemPrompt, maxConcurrency) {
   if (texts.length === 0) return [];
 
-  // DeepSeek 快路径：整批一次请求
-  if (service === 'deepseek') {
-    const batched = await translateBatchDeepSeek(texts, targetLang, apiKey);
+  if (model) {
+    const batched = await translateBatchWithModel(model, texts, targetLang);
     // 鉴权失败：短路整批，绝不回退逐条（会打出 N 个注定 401 的请求）
     if (batched && batched.authError) {
       return texts.map(() => ({ success: false, error: batched.error }));
@@ -472,7 +414,8 @@ async function translateBatch(texts, targetLang, apiKey, systemPrompt, service, 
         originalText: texts[i],
         translatedText: t,
         sourceLang: 'auto',
-        service: 'deepseek'
+        service: 'model',
+        modelName: model.name
       }));
     }
     // 批量失败 → 落到下方逐条工作池（保留质量与错误信息）
@@ -485,11 +428,9 @@ async function translateBatch(texts, targetLang, apiKey, systemPrompt, service, 
     while (nextIndex < texts.length) {
       const i = nextIndex++;
       try {
-        if (service === 'google') {
-          results[i] = await translateWithGoogle(texts[i], targetLang);
-        } else {
-          results[i] = await translateText(texts[i], targetLang, apiKey, systemPrompt);
-        }
+        results[i] = model
+          ? await translateWithModel(model, texts[i], targetLang, systemPrompt)
+          : await translateWithGoogle(texts[i], targetLang);
       } catch (e) {
         results[i] = { success: false, error: e.message || '批量翻译失败' };
       }
@@ -504,7 +445,7 @@ async function translateBatch(texts, targetLang, apiKey, systemPrompt, service, 
   return results;
 }
 
-// 划词翻译走长连接（port）：DeepSeek 流式推送 {type:'delta'}，结束推送 {type:'done', result}；
+// 划词翻译走长连接（port）：模型流式推送 {type:'delta'}，结束推送 {type:'done', result}；
 // Google 与缓存命中只推送 done
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'translate') return;
@@ -521,25 +462,25 @@ chrome.runtime.onConnect.addListener((port) => {
       // 冷启动竞态防护：等配置加载完成再路由，否则可能用错引擎/语言
       await configReady;
 
-      const service = userConfig.translationService || 'deepseek';
-      const cacheKey = `${service}|${userConfig.targetLang}|${text}`;
+      const target = resolveModel(userConfig.translationService || 'deepseek');
+      if (target.error) {
+        post({ type: 'done', result: { success: false, error: target.error } });
+        return;
+      }
+
+      const lang = userConfig.targetLang;
+      // 缓存 key 含模型 id 与模型名：改了模型配置不会命中旧结果
+      const cacheKey = target.google ? `google|${lang}|${text}` : `${target.model.id}|${target.model.model}|${lang}|${text}`;
       const cached = cacheGet(cacheKey);
       if (cached) {
         post({ type: 'done', result: cached });
         return;
       }
 
-      let result;
-      if (service === 'google') {
-        result = await translateWithGoogle(text, userConfig.targetLang);
-      } else {
-        if (!userConfig.apiKey) {
-          post({ type: 'done', result: { success: false, error: '请先在扩展设置中填写 DeepSeek API Key' } });
-          return;
-        }
-        result = await translateText(text, userConfig.targetLang, userConfig.apiKey, userConfig.systemPrompt, 2,
-          (partial, sourceLang) => post({ type: 'delta', translatedText: partial, sourceLang, service: 'deepseek' }));
-      }
+      const result = target.google
+        ? await translateWithGoogle(text, lang)
+        : await translateWithModel(target.model, text, lang, userConfig.systemPrompt, 2,
+          (partial, sourceLang) => post({ type: 'delta', translatedText: partial, sourceLang, service: 'model', modelName: target.model.name }));
 
       if (result && result.success) cacheSet(cacheKey, result);
       post({ type: 'done', result });
@@ -557,18 +498,25 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     (async () => {
       await configReady;
 
-      const service = userConfig.fp_translationService || 'google';
-      if (service === 'google') {
-        sendResponse(await translateBatch(request.texts, userConfig.fp_targetLang, '', '', 'google', 5));
+      const target = resolveModel(userConfig.fp_translationService || 'google');
+      if (target.error) {
+        sendResponse(request.texts.map(() => ({ success: false, error: target.error })));
         return;
       }
-
-      if (!userConfig.fp_apiKey) {
-        sendResponse(request.texts.map(() => ({ success: false, error: '请先在扩展设置中填写 DeepSeek API Key' })));
-        return;
-      }
-      sendResponse(await translateBatch(request.texts, userConfig.fp_targetLang, userConfig.fp_apiKey, userConfig.fp_systemPrompt, 'deepseek', 3));
+      sendResponse(await translateBatch(
+        request.texts, userConfig.fp_targetLang, target.model || null, userConfig.fp_systemPrompt, target.google ? 5 : 3
+      ));
     })().catch(() => {});
+    return true;
+  }
+
+  // 选项页「测试连接」：用未保存的模型配置翻译固定文本，不重试以便尽快反馈
+  if (request.action === 'testModel') {
+    (async () => {
+      const started = Date.now();
+      const result = await translateWithModel(request.model, 'Hello, world.', 'zh-CN', DEFAULT_SYSTEM_PROMPT, 0);
+      sendResponse({ ...result, ms: Date.now() - started });
+    })().catch((e) => sendResponse({ success: false, error: e.message }));
     return true;
   }
 });
