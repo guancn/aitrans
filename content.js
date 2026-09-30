@@ -229,15 +229,15 @@ function createAndShowPopup(text, x, y, replaceIcon = null, sourceStyleInfo = nu
     if(container) container.classList.add('show');
   }, 10);
   
-  // 15 秒超时保护，防止 Service Worker 无响应导致 loading spinner 永久卡死
-  const TRANSLATE_TIMEOUT_MS = 15000;
+  // SW 无响应兜底：background 在 TRANSLATE_DEADLINE_MS(25s) 内必回包，此值必须更大
+  const TRANSLATE_TIMEOUT_MS = 30000;
   const timeoutId = setTimeout(() => {
     // 必须校验 requestId：旧请求的定时器不能覆盖用户新发起的翻译弹窗
     if (requestId === activeRequestId && popupContainer) {
       popupContainer.innerHTML = `<div class="translate-ext-error">翻译超时，请重试</div>`;
     }
   }, TRANSLATE_TIMEOUT_MS);
-  
+
   try {
     chrome.runtime.sendMessage({ action: 'translate', text: text }, (response) => {
       clearTimeout(timeoutId);

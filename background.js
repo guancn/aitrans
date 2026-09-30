@@ -65,6 +65,11 @@ try {
   // Service Worker 上下文失效时静默处理
 }
 
+// 单次请求超时；DeepSeek 含重试的总时长受 TRANSLATE_DEADLINE_MS 约束
+// ⚠️ content.js 的 TRANSLATE_TIMEOUT_MS 是 SW 无响应兜底，必须大于 TRANSLATE_DEADLINE_MS
+const REQUEST_TIMEOUT_MS = 20000;
+const TRANSLATE_DEADLINE_MS = 25000;
+
 // ─── 划词翻译内存 LRU 缓存 ───────────────────────────────
 // SW 存活期间避免重复 API 调用（反复查同一个词很常见）；SW 终止即清空，零持久化成本
 const CACHE_MAX = 100;
@@ -95,10 +100,13 @@ async function translateText(text, targetLang, apiKey, systemPrompt, maxRetries 
 
   const url = 'https://api.deepseek.com/v1/chat/completions';
 
-  // maxRetries 不含首次尝试，总计最多 (maxRetries + 1) 次请求
+  // maxRetries 不含首次尝试，总计最多 (maxRetries + 1) 次请求，且整体不超过截止时间
+  const deadline = Date.now() + TRANSLATE_DEADLINE_MS;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return { success: false, error: '请求超时，请重试' };
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    const timeoutId = setTimeout(() => controller.abort(), Math.min(REQUEST_TIMEOUT_MS, remaining));
     try {
       const response = await fetch(url, {
         signal: controller.signal,
@@ -198,7 +206,7 @@ async function translateWithGoogle(text, targetLang) {
   const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t&dj=1`;
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 20000);
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     const response = await fetch(url, {
       signal: controller.signal,
