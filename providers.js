@@ -8,6 +8,8 @@ const THINKING_MAX_TOKENS = 16000;
 // 深度合并：对象递归合并，其余值覆盖，null 表示删除该键
 function deepMerge(target, patch) {
   for (const [k, v] of Object.entries(patch)) {
+    // JSON.parse 会产生自有的 __proto__ 键，递归写入会污染 Object.prototype
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
     if (v === null) {
       delete target[k];
     } else if (v && typeof v === 'object' && !Array.isArray(v) &&

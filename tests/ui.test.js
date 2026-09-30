@@ -53,6 +53,14 @@ test('选项页：增改删、手势内申请权限、测试连接', { skip }, (
     check(window.__store.models.length === 1 && window.__store.models[0].name === 'Claude', '应删除 DeepSeek');
     check(window.__store.translationService === 'google', '被删模型所在模式应回退 Google');
     check(window.__calls.sendMessage[0] && window.__calls.sendMessage[0].action === 'ensureConfig', '初始化应先请求 ensureConfig');
+
+    el('addModel').click(); await sleep(50);
+    fill({ f_name: 'Remote', f_protocol: 'openai', f_baseUrl: 'http://api.example.com/v1', f_model: 'm', f_apiKey: 'k' });
+    gesture(el('saveBtn')); await sleep(100);
+    check(el('status').textContent.includes('明文 HTTP'), '远端 http 应提示明文 HTTP');
+    el('f_baseUrl').value = 'http://localhost:11434/v1';
+    gesture(el('saveBtn')); await sleep(100);
+    check(!el('status').textContent.includes('明文 HTTP'), '本机 http 不应提示明文 HTTP');
     return failures;
   };
   const r = runHarness('options', { models: [DEEPSEEK], translationService: 'deepseek', fp_translationService: 'google' }, scenario.toString());

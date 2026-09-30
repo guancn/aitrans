@@ -155,6 +155,16 @@ $('toggleKey').addEventListener('click', () => {
 
 $('addModel').addEventListener('click', startDraft);
 
+// 非本机、非内网的 http 地址：API Key 会明文经过公网
+function isInsecureRemote(baseUrl) {
+  let u;
+  try { u = new URL(baseUrl); } catch (_) { return false; }
+  if (u.protocol !== 'http:') return false;
+  const h = u.hostname;
+  if (h === 'localhost' || h === '127.0.0.1' || h === '[::1]') return false;
+  return !(/^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h));
+}
+
 $('modelForm').addEventListener('submit', (e) => {
   e.preventDefault();
   const m = readForm();
@@ -164,7 +174,9 @@ $('modelForm').addEventListener('submit', (e) => {
   chrome.permissions.request({ origins: [originPattern(m.baseUrl)] })
     .catch(() => false)
     .then((granted) => persist(m).then(() => {
-      if (granted) showStatus('已保存', 'ok');
+      if (isInsecureRemote(m.baseUrl)) {
+        showStatus('已保存，但该地址使用明文 HTTP，API Key 可能被窃听' + (granted ? '' : '；且未授权访问该地址'), 'warn');
+      } else if (granted) showStatus('已保存', 'ok');
       else showStatus('已保存，但未授权访问该地址，翻译将失败。再次点击保存可重新授权', 'warn');
     }))
     .catch((err2) => showStatus('保存失败：' + err2.message, 'error'));

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadProviders, plain } = require('./helpers/load');
+const { loadProviders, plain, evalIn } = require('./helpers/load');
 const { sseText, streamResponse } = require('./helpers/sse');
 
 const P = loadProviders();
@@ -124,4 +124,10 @@ test('extractText：非流式响应', () => {
   }, 'anthropic'), 'BC');
   assert.equal(P.extractText({}, 'openai'), '');
   assert.equal(P.extractText({}, 'anthropic'), '');
+});
+
+test('extraParams 含 __proto__ 时不污染原型链', () => {
+  const r = req({ protocol: 'openai', baseUrl: 'https://x.com', extraParams: '{"__proto__":{"polluted":1},"a":1}' });
+  assert.equal(r.body.a, 1);
+  assert.equal(evalIn(P, '({}).polluted'), undefined);
 });
