@@ -30,7 +30,8 @@ window.chrome = {
       const r = msg.action === 'testModel' ? { success: true, translatedText: '你好，世界。', ms: 42 } : { ok: true };
       return __reply(r, cb);
     },
-    openOptionsPage() { __calls.openOptionsPage++; }
+    openOptionsPage() { __calls.openOptionsPage++; },
+    onMessage: { addListener() {} }
   },
   permissions: {
     request(p) { __calls.permissionsRequest.push({ origins: p.origins, inGesture: __inClick }); return Promise.resolve(false); },
@@ -63,23 +64,15 @@ window.confirm = () => true;
 `;
 }
 
-// page：'options' | 'popup'；scenario：返回 failures 数组的 async 函数源码
-function runHarness(page, initialStore, scenario) {
-  const abs = (f) => pathToFileURL(path.join(ROOT, f)).href;
-  let html = fs.readFileSync(path.join(ROOT, `${page}.html`), 'utf8');
-  const cssTag = `href="${page}.css"`;
-  const jsTag = `<script src="${page}.js"></script>`;
-  if (!html.includes(cssTag) || !html.includes(jsTag)) throw new Error(`${page}.html 缺少预期的 css/js 引用`);
-  html = html
-    .replace(cssTag, `href="${abs(page + '.css')}"`)
-    .replace(jsTag,
-      `<script>${chromeMock(initialStore)}</script>` +
-      `<script src="${abs(page + '.js')}"></script>` +
-      `<script>(${scenario})().then((failures) => {
+const abs = (f) => pathToFileURL(path.join(ROOT, f)).href;
+
+const finishScript = (scenario) => `<script>(${scenario})().then((failures) => {
          const pre = document.createElement('pre'); pre.id = '__result';
          pre.textContent = JSON.stringify({ failures }); document.body.appendChild(pre);
-       });</script>`);
-  const file = path.join(os.tmpdir(), `aitrans-${page}-harness.html`);
+       });</script>`;
+
+function dumpResult(name, html) {
+  const file = path.join(os.tmpdir(), `aitrans-${name}-harness.html`);
   fs.writeFileSync(file, html);
   const out = execFileSync(CHROME, [
     '--headless=new', '--disable-gpu', '--allow-file-access-from-files',
@@ -91,4 +84,27 @@ function runHarness(page, initialStore, scenario) {
   return JSON.parse(txt);
 }
 
-module.exports = { CHROME, runHarness };
+// 把 content.js/css 注入 body 片段构成的宿主页
+function runContentHarness(body, initialStore, scenario) {
+  return dumpResult('content', `<!doctype html><html><head><meta charset="utf-8">
+    <link rel="stylesheet" href="${abs('content.css')}"></head><body>${body}
+    <script>${chromeMock(initialStore)}</script>
+    <script src="${abs('content.js')}"></script>${finishScript(scenario)}</body></html>`);
+}
+
+// page：'options' | 'popup'；scenario：返回 failures 数组的 async 函数源码
+function runHarness(page, initialStore, scenario) {
+  let html = fs.readFileSync(path.join(ROOT, `${page}.html`), 'utf8');
+  const cssTag = `href="${page}.css"`;
+  const jsTag = `<script src="${page}.js"></script>`;
+  if (!html.includes(cssTag) || !html.includes(jsTag)) throw new Error(`${page}.html 缺少预期的 css/js 引用`);
+  html = html
+    .replace(cssTag, `href="${abs(page + '.css')}"`)
+    .replace(jsTag,
+      `<script>${chromeMock(initialStore)}</script>` +
+      `<script src="${abs(page + '.js')}"></script>` +
+      finishScript(scenario));
+  return dumpResult(page, html);
+}
+
+module.exports = { CHROME, runHarness, runContentHarness };

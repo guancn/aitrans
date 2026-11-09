@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { CHROME, runHarness } = require('./helpers/headless');
+const { CHROME, runHarness, runContentHarness } = require('./helpers/headless');
 
 const skip = !CHROME && '未找到 Chrome（可设置 CHROME_PATH）';
 
@@ -103,5 +103,68 @@ test('popup：动态模型下拉、无 Key 输入、缺 Key 提示、管理模�
     translationService: 'deepseek', fp_translationService: 'm_x', activeMode: 'selection'
   };
   const r = runHarness('popup', store, scenario.toString());
+  assert.deepEqual(r.failures, []);
+});
+
+test('划词图标：中性玻璃外观，放在选中行上方且不遮挡下一行', { skip }, () => {
+  const scenario = async () => {
+    const failures = [];
+    const check = (cond, msg) => { if (!cond) failures.push(msg); };
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const icon = () => document.getElementById('chrome-ext-translate-icon');
+    const lineOf = (range) => [...range.getClientRects()].filter(r => r.width > 0).sort((a, b) => a.height - b.height)[0];
+
+    const selectAndRelease = async (node, start, end, atX) => {
+      document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      const range = document.createRange();
+      range.setStart(node, start); range.setEnd(node, end);
+      const sel = window.getSelection();
+      sel.removeAllRanges(); sel.addRange(range);
+      const line = lineOf(range);
+      const clientX = atX === undefined ? line.right : atX;
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX, clientY: line.top + line.height / 2 }));
+      await sleep(300);
+      return { line, clientX };
+    };
+
+    await sleep(100);
+    const mid = document.getElementById('mid').firstChild;
+    const { line, clientX } = await selectAndRelease(mid, 0, 5);
+    const box = icon().getBoundingClientRect();
+    const style = getComputedStyle(icon());
+    check(box.width === 28 && box.height === 28, '图标应为 28px：' + box.width);
+    check(box.bottom <= line.top, `图标应在选中行上方：${box.bottom} > ${line.top}`);
+    check(Math.abs(box.left + 14 - clientX) < 1, '图标应水平对准鼠标');
+    check(style.backgroundImage === 'none', '不应再用渐变底色');
+    const [r, g, b] = style.backgroundColor.match(/[\d.]+/g).map(Number);
+    check(Math.max(r, g, b) - Math.min(r, g, b) <= 4, '玻璃应为中性色：' + style.backgroundColor);
+    check(icon().querySelector('svg').getAttribute('width') === '16', '符号应为 16px');
+
+    const top = document.getElementById('top').firstChild;
+    const first = await selectAndRelease(top, 0, 5);
+    check(icon().getBoundingClientRect().top >= first.line.bottom, '顶部放不下时应退到行下方');
+
+    const edge = await selectAndRelease(mid, 0, 5, document.documentElement.clientWidth - 2);
+    check(icon().getBoundingClientRect().right <= document.documentElement.clientWidth, '不应超出视口右侧：' + edge.clientX);
+
+    // 整段选中时 getClientRects 含块元素大框，定位必须仍取行框
+    const para = document.getElementById('mid');
+    document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    const range = document.createRange();
+    range.selectNode(para);
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+    const blockTop = para.getBoundingClientRect().top;
+    const lines = [...range.getClientRects()].filter(r => r.height < 30).sort((a, b) => b.top - a.top);
+    const last = lines[0];
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: 100, clientY: last.top + last.height / 2 }));
+    await sleep(300);
+    const bottom = icon().getBoundingClientRect().bottom;
+    check(lines.length > 1 && bottom <= last.top && bottom > blockTop, `整段选中应贴最后一行：${bottom} / ${last.top}`);
+    return failures;
+  };
+  const filler = '这是一段用于验证划词图标位置的正文内容，'.repeat(30);
+  const body = `<p id="top" style="margin:0;font:16px/24px sans-serif">${filler}</p>
+    <p id="mid" style="margin:80px 0 0;font:16px/24px sans-serif">${filler}</p>`;
+  const r = runContentHarness(body, { triggerMode: 'icon', activeMode: 'selection' }, scenario.toString());
   assert.deepEqual(r.failures, []);
 });

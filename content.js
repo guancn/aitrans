@@ -137,6 +137,32 @@ function debounce(func, wait) {
   };
 }
 
+const ICON_SIZE = 28;
+const ICON_LINE_GAP = 6;
+
+// 图标放在鼠标所在选中行的上方：上方是已读内容，不遮挡接下来要读的下一行；顶部放不下时才放到行下方
+function getIconPosition(x, y) {
+  const selection = window.getSelection();
+  const rects = selection.rangeCount
+    ? [...selection.getRangeAt(0).getClientRects()].filter(r => r.width > 0)
+    : [];
+  const distance = (r) => Math.max(r.top - y, y - r.bottom, 0);
+  // 整段选中时 getClientRects 还会返回块元素的大框，距离相同取最矮的才是行框
+  const line = rects.reduce(
+    (best, r) => (distance(r) < distance(best) || (distance(r) === distance(best) && r.height < best.height)) ? r : best,
+    rects[0]
+  );
+  // input/textarea 内的选区没有行框，按鼠标位置估算一行
+  const lineTop = line ? line.top : y - 12;
+  const lineBottom = line ? line.bottom : y + 12;
+
+  const above = lineTop - ICON_SIZE - ICON_LINE_GAP;
+  const top = above >= ICON_LINE_GAP ? above : lineBottom + ICON_LINE_GAP;
+  const maxLeft = document.documentElement.clientWidth - ICON_SIZE - ICON_LINE_GAP;
+  const left = Math.max(ICON_LINE_GAP, Math.min(x - ICON_SIZE / 2, maxLeft));
+  return { left: left + window.scrollX, top: top + window.scrollY };
+}
+
 function showIcon(text, x, y, sourceStyleInfo) {
   cleanup();
   
@@ -144,7 +170,7 @@ function showIcon(text, x, y, sourceStyleInfo) {
   iconContainer.id = 'chrome-ext-translate-icon';
   // SF Symbols 风格线性译文字形（currentColor 上色，描边样式见 content.css）
   iconContainer.innerHTML = `
-    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
       <path d="m5 8 6 6"/>
       <path d="m4 14 6-6 2-3"/>
       <path d="M2 5h12"/>
@@ -154,13 +180,10 @@ function showIcon(text, x, y, sourceStyleInfo) {
     </svg>
   `;
   
-  // Position adjustments to prevent out of bounds
-  let leftPos = x + window.scrollX + 10;
-  if (x + 40 > window.innerWidth) leftPos = x + window.scrollX - 40;
-  
-  iconContainer.style.left = `${leftPos}px`;
-  iconContainer.style.top = `${y + window.scrollY + 10}px`;
-  
+  const { left, top } = getIconPosition(x, y);
+  iconContainer.style.left = `${left}px`;
+  iconContainer.style.top = `${top}px`;
+
   let hoverTimeout;
   let translated = false; // Flag to check if we already requested translation
   
