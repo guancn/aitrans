@@ -137,7 +137,7 @@ function debounce(func, wait) {
   };
 }
 
-const ICON_SIZE = 28;
+const ICON_SIZE = 24;
 const ICON_LINE_GAP = 6;
 
 // 图标放在鼠标所在选中行的上方：上方是已读内容，不遮挡接下来要读的下一行；顶部放不下时才放到行下方
@@ -168,17 +168,6 @@ function showIcon(text, x, y, sourceStyleInfo) {
   
   iconContainer = document.createElement('div');
   iconContainer.id = 'chrome-ext-translate-icon';
-  // SF Symbols 风格线性译文字形（currentColor 上色，描边样式见 content.css）
-  iconContainer.innerHTML = `
-    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-      <path d="m5 8 6 6"/>
-      <path d="m4 14 6-6 2-3"/>
-      <path d="M2 5h12"/>
-      <path d="M7 2h1"/>
-      <path d="m22 22-5-10-5 10"/>
-      <path d="M14 18h6"/>
-    </svg>
-  `;
   
   const { left, top } = getIconPosition(x, y);
   iconContainer.style.left = `${left}px`;

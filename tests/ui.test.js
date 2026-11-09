@@ -132,13 +132,15 @@ test('划词图标：中性玻璃外观，放在选中行上方且不遮挡下�
     const { line, clientX } = await selectAndRelease(mid, 0, 5);
     const box = icon().getBoundingClientRect();
     const style = getComputedStyle(icon());
-    check(box.width === 28 && box.height === 28, '图标应为 28px：' + box.width);
+    check(box.width === 24 && box.height === 24, '图标应为 24px：' + box.width);
     check(box.bottom <= line.top, `图标应在选中行上方：${box.bottom} > ${line.top}`);
-    check(Math.abs(box.left + 14 - clientX) < 1, '图标应水平对准鼠标');
+    check(Math.abs(box.left + 12 - clientX) < 1, '图标应水平对准鼠标');
     check(style.backgroundImage === 'none', '不应再用渐变底色');
     const [r, g, b] = style.backgroundColor.match(/[\d.]+/g).map(Number);
     check(Math.max(r, g, b) - Math.min(r, g, b) <= 4, '玻璃应为中性色：' + style.backgroundColor);
-    check(icon().querySelector('svg').getAttribute('width') === '16', '符号应为 16px');
+    const glyph = getComputedStyle(icon(), '::before');
+    check(glyph.content === '"译"' && glyph.fontSize === '13px', '字形应为 13px 的「译」：' + glyph.content);
+    check(icon().textContent === '', '字形不应是可被改写的文本节点');
 
     const top = document.getElementById('top').firstChild;
     const first = await selectAndRelease(top, 0, 5);
