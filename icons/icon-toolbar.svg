@@ -1,0 +1,11 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- aitrans 工具栏小尺寸母版（16/32px）：去掉投影与描边、圆角方铺满、字形加粗加大，避免笔画密集的「译」在小尺寸发虚；字形取系统字体，发布用 PNG 由本文件栅格化 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#58585D"/>
+      <stop offset="1" stop-color="#2B2B2E"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="126" height="126" rx="22" fill="url(#bg)"/>
+  <text x="64" y="99" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="100" font-weight="700" fill="#F5F5F7">译</text>
+</svg>
